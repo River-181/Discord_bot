@@ -1,0 +1,120 @@
+app:
+  timezone: "Asia/Seoul"
+  locale: "ko-KR"
+  guild_name: "Team.망상궤도"
+  target_guild_id: 1401492009486651452
+
+data:
+  base_dir: "./data"
+  decisions_file: "decisions.jsonl"
+  warrooms_file: "warrooms.jsonl"
+  summaries_file: "summaries.jsonl"
+  ops_events_file: "ops_events.ndjson"
+  snapshots_dir: "snapshots"
+
+channels:
+  meeting_source: "회의"
+  decision_log: "망상궤도-비서-공간"
+  operation_briefing: "운영-브리핑"
+  guide: "가이드"
+  knowledge_base: "망상궤도-비서-공간"
+  automation_log: "망상궤도-비서-공간"
+  assistant_output: "망상궤도-비서-공간"
+  news_digest: "🛰️-뉴스-레이다"
+  news_log: "망상궤도-비서-공간"
+
+warroom:
+  text_category_by_zone:
+    core: "------🧱-01-코어--------"
+    product: "------🧩-02-제품--------"
+    growth: "------🚀-03-성장--------"
+  voice_category: "------🔊-06-음성채널-----"
+  archive_category: "----------아카이브----------"
+  default_ttl_days: 30
+  warning_days: 14
+  archive_days: 30
+
+thread_hygiene:
+  enabled: true
+  message_threshold: 6
+  window_minutes: 10
+  min_unique_authors: 2
+  cooldown_minutes: 20
+  exempt_channels:
+    - "github-webhook"
+    - "망상궤도-비서-공간"
+
+deep_work:
+  enabled: true
+  weekdays: [0, 1, 2, 3, 4]
+  start_hour: 14
+  end_hour: 16
+  notice_cooldown_minutes: 30
+  urgent_keywords: ["긴급", "urgent", "서버다운", "장애", "fire"]
+  allowlist_channels:
+    - "운영-브리핑"
+    - "망상궤도-비서-공간"
+  exempt_roles: ["운영", "core", "관리자"]
+
+scheduler:
+  inactivity_check_cron: "0 * * * *"
+  backup_cron: "30 0 * * *"
+  # only_when_action: warnings/archived가 있을 때만 디스코드 채널로 로그 전송
+  # always: 매번 전송 (스팸 가능)
+  # never: 디스코드 전송 안 함 (ops_events.ndjson에만 기록)
+  inactivity_scan_post_mode: "only_when_action"
+  news_digest_morning_cron: "0 9 * * 1-5"
+  news_digest_evening_cron: "0 18 * * 1-5"
+  music_housekeeping_cron: "*/5 * * * *"
+
+gemini:
+  model: "gemini-2.0-flash"
+  timeout_seconds: 25
+
+news:
+  enabled: true
+  window_hours: 12
+  per_topic_limit: 8
+  max_total_items: 40
+  dedupe_days: 7
+  topics:
+    - name: "Agent Radar"
+      query: "\"AI agent\" OR 에이전트 OR \"MCP\" OR \"Model Context Protocol\" OR assistant OR \"discord bot\""
+    - name: "스타트업/투자"
+      query: "스타트업 OR 투자 OR VC OR 시드 OR Series A"
+    - name: "정책/지원사업"
+      query: "정부지원사업 OR 중기부 OR 창업지원 OR R&D 과제 OR 보조금"
+    - name: "공모전/해커톤"
+      query: "공모전 OR 해커톤 OR 챌린지 OR 모집"
+
+dm_assistant:
+  enabled: true
+  mode: "hybrid"
+  allowlist_user_ids:
+    - 286397219886858240
+  news_run_cooldown_seconds: 600
+  max_summary_chars: 4000
+  log_message_content: false
+
+event_reminder:
+  enabled: true
+  reminder_minutes: 5
+  scan_cron: "*/1 * * * *"
+  reminder_channel: "운영-브리핑"
+  mention_mode: "event_subscribers_plus_here"
+  send_dm: true
+  max_mentions_per_message: 20
+
+music:
+  enabled: true
+  source_policy: "hybrid"
+  allowlist_user_ids:
+    - 286397219886858240
+  default_voice_channel: "음악 라운지"
+  idle_disconnect_minutes: 10
+  max_queue_size: 30
+  max_track_minutes: 180
+  default_volume: 70
+  notice_policy: "low_noise"
+  ffmpeg_path: "/opt/homebrew/bin/ffmpeg"
+  opus_library_path: "/opt/homebrew/opt/opus/lib/libopus.0.dylib"
