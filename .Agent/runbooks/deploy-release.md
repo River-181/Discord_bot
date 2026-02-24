@@ -11,7 +11,7 @@
 
 1. 코드 반영
 2. 의존성 반영(`requirements.txt`) 설치
-3. `bash scripts/botctl.sh restart --launchd` 또는 `--daemon`(임시)
+3. `bash scripts/botctl.sh deploy --launchd` 또는 `--daemon`(임시)
 4. 핵심 명령 최소 재검증:
    - `/meeting_summary`
    - `/news_run_now`

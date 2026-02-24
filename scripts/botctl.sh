@@ -13,6 +13,7 @@ commands:
   start     Start bot
   stop      Stop bot
   restart   Restart bot
+  deploy    Validate .Agent workspace and restart bot
   status    Show status
   logs      Tail logs
 
@@ -24,6 +25,7 @@ examples:
   ./scripts/botctl.sh stop
   ./scripts/botctl.sh logs
   ./scripts/botctl.sh restart --launchd
+  ./scripts/botctl.sh deploy --launchd
 EOF
 }
 
@@ -50,6 +52,7 @@ if [ "$mode" = "launchd" ]; then
   case "$command" in
     start) "$MANAGE_LAUNCHD" install ;;
     stop) "$MANAGE_LAUNCHD" uninstall ;;
+    deploy) "$ROOT_DIR/.Agent/scripts/validate.sh" && "$MANAGE_LAUNCHD" restart ;;
     restart) "$MANAGE_LAUNCHD" restart ;;
     status) "$MANAGE_LAUNCHD" status ;;
     logs) tail -n 120 -f "$ROOT_DIR/data/logs/launchd.err.log" ;;
@@ -61,6 +64,7 @@ fi
 case "$command" in
   start) "$MANAGE_BOT" start ;;
   stop) "$MANAGE_BOT" stop ;;
+  deploy) "$ROOT_DIR/.Agent/scripts/validate.sh" && "$MANAGE_BOT" restart ;;
   restart) "$MANAGE_BOT" restart ;;
   status) "$MANAGE_BOT" status ;;
   logs) tail -n 120 -f "$ROOT_DIR/data/logs/bot.log" ;;
