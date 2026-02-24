@@ -7,7 +7,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 import discord
 
@@ -187,6 +187,22 @@ _TYPE_INTRO = {
     "youtube": "🎬 유튜브 제보가 왔어요. 핵심 내용을 우선 정리해드릴게요.",
     "photo": "🖼️ 비주얼 제보가 왔어요. 톤과 메시지 기준으로 빠르게 검토하면 좋아요.",
 }
+
+_HOOK_BLOCKLIST_SUBSTRINGS = (
+    "youtube.com/watch",
+    "youtu.be/",
+    "링크를 확인해",
+    "바로 반영하세요",
+    "단일 링크 제보",
+    "내용 요약 없음",
+    "내용을 추출하지 못했습니다",
+)
+
+_HOOK_GENERIC_PATTERNS = (
+    re.compile(r"^링크\s+\d+건$", re.IGNORECASE),
+    re.compile(r"^자료\s*제보입니다[.。]?$", re.IGNORECASE),
+    re.compile(r"^핵심:\s*$", re.IGNORECASE),
+)
 
 
 def _compact_url_for_title(value: str) -> str:
@@ -545,6 +561,27 @@ class CurationService:
         lower = value.lower()
         return any(pattern in lower for pattern in _YOUTUBE_PATTERNS)
 
+    @staticmethod
+    def _youtube_video_id(value: str) -> str | None:
+        try:
+            parsed = urlparse(value)
+            host = (parsed.netloc or "").lower().replace("www.", "")
+            path = (parsed.path or "").strip("/")
+            if not host:
+                return None
+            if host == "youtu.be":
+                return path.split("/")[0] if path else None
+            if host in {"youtube.com", "music.youtube.com"}:
+                if parsed.path == "/watch":
+                    video_id = (parse_qs(parsed.query).get("v") or [None])[0]
+                    return str(video_id) if video_id else None
+                if path.startswith("shorts/") or path.startswith("live/"):
+                    parts = path.split("/")
+                    return parts[1] if len(parts) >= 2 else None
+            return None
+        except Exception:
+            return None
+
     def _is_music_url(self, value: str) -> bool:
         lower = value.lower()
         return any(pattern in lower for pattern in _MUSIC_PATTERNS)
@@ -696,6 +733,9 @@ class CurationService:
             url = urls[0]
             if curation_type == "link":
                 base = "참고 링크"
+            elif curation_type == "youtube":
+                video_id = self._youtube_video_id(url)
+                base = f"유튜브 영상 제보 ({video_id[:8]})" if video_id else "유튜브 영상 제보"
             else:
                 base = _compact_url_for_title(url)
                 if not base:
@@ -765,13 +805,17 @@ class CurationService:
             return True
         if normalized.startswith("단일 링크 제보"):
             return True
+        if normalized.startswith("유튜브 영상 링크 제보입니다."):
+            return True
+        if "링크를 확인해 영상 핵심 포인트를 바로 반영하세요." in normalized:
+            return True
         return len(normalized) < 12
 
     def _build_fallback_summary(self, curation_type: str, title: str, urls: list[str]) -> str:
         if urls:
             preview = _short_url_display(urls[0])
             if curation_type == "youtube":
-                return f"{preview} 링크를 확인해 영상 핵심 포인트를 바로 반영하세요."
+                return "유튜브 영상 링크 제보입니다. 제목과 핵심 포인트 확인 후 팀 적용 여부를 판단하세요."
             if curation_type == "music":
                 return f"{preview} 음악/사운드 관련 제보입니다. 기획/운영 검토 대상으로 분류하세요."
             if curation_type == "photo":
@@ -780,30 +824,91 @@ class CurationService:
         return "링크의 핵심을 팀 기준으로 정리해 검토가 필요합니다."
 
     def _build_hook(self, curation_type: str, title: str, summary: str, tags: list[str]) -> str:
+        hook, _ = self._select_hook_with_source(curation_type, title, summary, tags)
+        return hook
+
+    def _select_hook_with_source(
+        self,
+        curation_type: str,
+        title: str,
+        summary: str,
+        tags: list[str],
+    ) -> tuple[str, str]:
         summary_text = _normalize_display_summary(summary)
-        if summary_text and not self._is_summary_weak(summary_text) and summary_text != title:
+        candidate_from_summary = ""
+        if summary_text and not self._is_summary_weak(summary_text):
             first_line = [line.strip() for line in re.split(r"\n|\r", summary_text) if line.strip()]
             if first_line:
-                return truncate_text(first_line[0], 140, suffix="")
-        return self._one_sentence_teaser(curation_type, title, tags)
+                candidate_from_summary = first_line[0]
+
+        normalized_title = _normalize_display_summary(self._sanitize_title(title, fallback=""))
+        if (
+            candidate_from_summary
+            and candidate_from_summary != normalized_title
+            and not self._is_hook_mechanical(candidate_from_summary)
+        ):
+            return (truncate_text(candidate_from_summary, 120, suffix=""), "summary")
+
+        persona_hook = self._one_sentence_teaser(curation_type, title, tags)
+        return (truncate_text(persona_hook, 120, suffix=""), "persona")
+
+    @staticmethod
+    def _is_hook_mechanical(text: str) -> bool:
+        normalized = _normalize_display_summary(text)
+        if not normalized:
+            return True
+        if len(normalized) < 12:
+            return True
+        lowered = normalized.lower()
+        if "http://" in lowered or "https://" in lowered or "www." in lowered:
+            return True
+        if any(token in lowered for token in _HOOK_BLOCKLIST_SUBSTRINGS):
+            return True
+        if any(pattern.match(normalized) for pattern in _HOOK_GENERIC_PATTERNS):
+            return True
+        if normalized.startswith("유튜브 영상 링크 제보입니다."):
+            return True
+        return False
+
+    def _hook_subject(self, curation_type: str, title: str) -> str:
+        subject = self._sanitize_title(title, fallback="")
+        subject = re.sub(r"^\[[^\]]+\]\s*", "", subject).strip()
+        subject = _URL_SPLIT_PATTERN.sub("", subject)
+        subject = re.sub(r"\b(?:https?://|www\.)\S+", "", subject, flags=re.IGNORECASE)
+        subject = re.sub(
+            r"\b[a-z0-9.-]+\.(?:com|net|org|io|kr|co|me|gg|tv)(?:/[^\s]*)?\b",
+            "",
+            subject,
+            flags=re.IGNORECASE,
+        )
+        subject = re.sub(r"\s{2,}", " ", subject).strip(" -_/")
+        if subject:
+            return truncate_text(subject, 40, suffix="")
+
+        fallback_subject = {
+            "link": "이 링크",
+            "idea": "이 아이디어",
+            "music": "이 음악 제보",
+            "youtube": "이 영상",
+            "photo": "이 비주얼 제보",
+        }
+        return fallback_subject.get(str(curation_type).lower(), "이 제보")
 
     def _one_sentence_teaser(self, curation_type: str, title: str, tags: list[str]) -> str:
         type_label = str(curation_type).lower()
-        tag_hint = " ".join(t for t in (tags or [])[:3] if str(t).startswith("#"))
-        if not tag_hint:
-            tag_hint = "#curation"
-        clean_title = self._sanitize_title(title, fallback="[큐레이션]")
+        _ = tags
+        subject = self._hook_subject(type_label, title)
         if type_label == "link":
-            return f"핵심: {clean_title} / 링크 제보를 빠르게 분류하고 적용 여부를 판단하세요. {tag_hint}"
+            return f"망상궤도 비서가 링크 핵심 먼저 정리했어요. {subject}는 바로 검토 가치가 있습니다."
         if type_label == "idea":
-            return f"핵심: {clean_title} / 실행 가능한 아이디어 제보입니다. {tag_hint}"
+            return f"망상궤도 비서가 아이디어 포인트를 잡아봤어요. {subject}는 작은 실험으로 검증해볼 만해요."
         if type_label == "music":
-            return f"핵심: {clean_title} / 음악/사운드 제보입니다. 실사용 적합도를 중심으로 검토하세요. {tag_hint}"
+            return f"망상궤도 비서가 음악 제보 톤을 확인했어요. {subject}는 활용 후보로 올려둘 만합니다."
         if type_label == "youtube":
-            return f"핵심: {clean_title} / 유튜브 제보입니다. 영상 핵심만 빠르게 반영하세요. {tag_hint}"
+            return f"망상궤도 비서가 영상 관점으로 먼저 정리할게요. {subject} 핵심만 추려 팀에 반영하면 됩니다."
         if type_label == "photo":
-            return f"핵심: {clean_title} / 시각 자료 제보입니다. 톤/메시지 정합성 검토 포인트로 봐주세요. {tag_hint}"
-        return f"핵심: {clean_title} / 제보 카테고리 기준으로 운영 판단이 필요합니다. {tag_hint}"
+            return f"망상궤도 비서가 비주얼 포인트를 확인했어요. {subject}는 톤·메시지 체크에 유효합니다."
+        return f"망상궤도 비서가 먼저 핵심을 정리했어요. {subject}는 운영 관점에서 검토 가치가 있습니다."
 
     @staticmethod
     def _build_publish_bullets(summary: str, *, max_items: int = 3, max_len: int = 120) -> list[str]:
@@ -1517,7 +1622,7 @@ class CurationService:
             if self._is_summary_weak(summary):
                 summary = self._build_fallback_summary(curation_type, title, urls)
             summary_lines = self._build_publish_bullets(summary)
-            hook = self._build_hook(curation_type, title, "\n".join(summary_lines), tags)
+            hook, hook_source = self._select_hook_with_source(curation_type, title, "\n".join(summary_lines), tags)
 
             lines = self._build_published_message_lines(
                 curation_type=curation_type,
@@ -1606,6 +1711,7 @@ class CurationService:
                     "target_message_id": posted_message.id,
                     "thread_id": thread_id,
                     "curation_type": curation_type,
+                    "hook_source": hook_source,
                 },
                 idempotency_key=f"curation_approved:{submission_id}",
             )

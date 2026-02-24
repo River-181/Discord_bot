@@ -71,6 +71,91 @@ def test_rule_classification_youtube(tmp_path: Path) -> None:
     assert result.curation_type == "youtube"
 
 
+def test_rule_classification_youtube_url_only_uses_humanized_title_and_summary(tmp_path: Path) -> None:
+    service = _make_service(tmp_path)
+    msg = _DummyMessage("https://www.youtube.com/watch?v=HJRpYF7FKso")
+    result = service.classify_message(msg)
+    assert result.curation_type == "youtube"
+    assert result.title.startswith("[YOUTUBE] 유튜브 영상 제보")
+    assert "youtube.com/watch" not in result.title
+    assert result.summary.startswith("유튜브 영상 링크 제보입니다.")
+    assert "youtube.com/watch" not in result.summary
+
+
+def test_youtube_url_only_publish_hook_is_not_duplicated_summary(tmp_path: Path) -> None:
+    service = _make_service(tmp_path)
+    msg = _DummyMessage("https://www.youtube.com/watch?v=HJRpYF7FKso")
+    result = service.classify_message(msg)
+    hook = service._build_hook(result.curation_type, result.title, result.summary, result.tags)
+    lines = service._build_published_message_lines(
+        curation_type=result.curation_type,
+        hook=hook,
+        title=result.title,
+        summary=result.summary,
+        urls=["https://www.youtube.com/watch?v=HJRpYF7FKso"],
+        author_id=286,
+        author_name="김주용",
+        source_message_link="https://discord.com/channels/1/2/3",
+        mention_role=None,
+        mention_role_name="knowledge",
+        tags=result.tags,
+    )
+    content = "\n".join(lines)
+    assert content.startswith("훅: 망상궤도 비서")
+    assert "youtube.com/watch" not in hook
+    assert hook != result.summary
+    assert "- 유튜브 영상 링크 제보입니다." in content
+
+
+def test_hook_persona_templates_include_assistant_phrase(tmp_path: Path) -> None:
+    service = _make_service(tmp_path)
+    fallback_summary = "단일 링크 제보입니다."
+    cases = [
+        ("link", "[LINK] 실험 운영 링크"),
+        ("idea", "[IDEA] 아이디어 초안"),
+        ("music", "[MUSIC] 플레이리스트 후보"),
+        ("youtube", "[YOUTUBE] 유튜브 영상 제보 (HJRpYF7F)"),
+        ("photo", "[PHOTO] 비주얼 레퍼런스"),
+    ]
+    for curation_type, title in cases:
+        hook = service._build_hook(curation_type, title, fallback_summary, ["#curation", f"#{curation_type}"])
+        assert "망상궤도 비서" in hook
+
+
+def test_hook_length_limit_is_120_characters(tmp_path: Path) -> None:
+    service = _make_service(tmp_path)
+    long_summary = "운영 반영 포인트를 정리했습니다. " + ("핵심 포인트 " * 30)
+    hook = service._build_hook("link", "[LINK] 참고 링크", long_summary, ["#curation", "#link"])
+    assert len(hook) <= 120
+
+
+def test_hook_quality_gate_falls_back_to_persona_for_mechanical_summary(tmp_path: Path) -> None:
+    service = _make_service(tmp_path)
+    mechanical = "youtube.com/watch 링크를 확인해 영상 핵심 포인트를 바로 반영하세요."
+    hook, source = service._select_hook_with_source(
+        "youtube",
+        "[YOUTUBE] 유튜브 영상 제보 (HJRpYF7F)",
+        mechanical,
+        ["#curation", "#youtube"],
+    )
+    assert source == "persona"
+    assert "망상궤도 비서" in hook
+    assert "youtube.com/watch" not in hook
+
+
+def test_hook_source_uses_summary_when_sentence_is_quality_ok(tmp_path: Path) -> None:
+    service = _make_service(tmp_path)
+    summary = "팀 운영에 바로 적용 가능한 큐레이션 포인트 세 가지를 정리했습니다."
+    hook, source = service._select_hook_with_source(
+        "link",
+        "[LINK] 참고 링크",
+        summary,
+        ["#curation", "#link"],
+    )
+    assert source == "summary"
+    assert hook == summary
+
+
 def test_rule_classification_instagram_defaults_to_link(tmp_path: Path) -> None:
     service = _make_service(tmp_path)
     msg = _DummyMessage("https://www.instagram.com/p/DVGq8eSAQUR/")
