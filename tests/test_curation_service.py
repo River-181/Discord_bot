@@ -194,6 +194,38 @@ def test_curation_summary_display_normalization() -> None:
     assert normalized == "핵심 링크 정리입니다."
 
 
+def test_curation_summary_normalization_removes_repeated_social_noise() -> None:
+    raw = "\n".join(
+        [
+            "Sam Sifton",
+            "Sam Sifton, the host of The Morning",
+            "Sam Sifton",
+            "좋아요 12",
+            "Sam Sifton, the host of The Morning",
+        ]
+    )
+    normalized = _normalize_display_summary(raw)
+    assert "좋아요" not in normalized
+    assert "Sam Sifton" in normalized
+    # 중복 문구는 한 번만 남아야 한다
+    assert normalized.count("Sam Sifton, the host of The Morning") == 1
+
+
+def test_curation_summary_normalization_removes_inline_social_noise() -> None:
+    raw = "좋아요 12 | Sam Sifton, the host of The Morning | Likes 33"
+    normalized = _normalize_display_summary(raw)
+    assert "좋아요" not in normalized
+    assert "Likes" not in normalized
+    assert normalized == "Sam Sifton, the host of The Morning"
+
+
+def test_curation_build_summary_does_not_append_link_count_if_signal_exists(tmp_path: Path) -> None:
+    service = _make_service(tmp_path)
+    text = "아이디어 공유: 인터페이스 정리 링크를 참고하세요"
+    summary = service._build_summary(text, ["https://example.com/x"], [])
+    assert "링크 1건" not in summary
+    assert "인터페이스 정리" in summary
+
 def test_curation_title_without_redundant_url() -> None:
     title = _strip_urls_for_title("https://github.com/shanraisshan/claude-code-best-practice")
     assert title == ""
@@ -205,7 +237,7 @@ def test_curation_title_generated_from_url_only_is_compact(tmp_path: Path) -> No
     service = _make_service(tmp_path)
     text = "https://github.com/shanraisshan/claude-code-best-practice"
     title = service._build_title("link", text, [text], [])
-    assert title == "[LINK] github.com/claude-code-best-practice"
+    assert title == "[LINK] 참고 링크"
 
 
 def test_review_embed_title_does_not_include_raw_url(tmp_path: Path) -> None:

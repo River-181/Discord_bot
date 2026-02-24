@@ -80,6 +80,14 @@ _NOISE_INLINE_PATTERNS = [
     re.compile(r"^\s*\d+\s*개?의?\s*좋아요.*", re.IGNORECASE),
     re.compile(r"^\s*likes\b.*", re.IGNORECASE),
     re.compile(r"^\s*views?\b.*", re.IGNORECASE),
+    re.compile(r"^\s*팔로워\s*\d+.*", re.IGNORECASE),
+]
+_NOISE_SNIPPET_PATTERNS = [
+    re.compile(r"\b좋아요\s*\d+\b", re.IGNORECASE),
+    re.compile(r"\blikes\s*\d+\b", re.IGNORECASE),
+    re.compile(r"\b댓글\b", re.IGNORECASE),
+    re.compile(r"\b공유\b", re.IGNORECASE),
+    re.compile(r"\b팔로워\b", re.IGNORECASE),
 ]
 _TRACKING_PARAM_PATTERNS = [
     re.compile(r"^utm_[^=]+"),
@@ -210,7 +218,59 @@ def _normalize_display_summary(text: str) -> str:
     cleaned = _URL_SPLIT_PATTERN.sub("", str(text))
     cleaned = re.sub(r"\s*/\s*링크\s+\d+건\s*$", "", cleaned)
     cleaned = re.sub(r"^링크\s+\d+건\s*[/\s]*", "", cleaned)
-    return re.sub(r"\s{2,}", " ", cleaned).strip()
+    lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for line in lines:
+        lowered = line.lower()
+        if any(pattern.match(lowered) for pattern in _NOISE_LINE_PATTERNS):
+            continue
+        if any(pattern.match(lowered) for pattern in _NOISE_INLINE_PATTERNS):
+            continue
+        if lowered in seen:
+            continue
+        deduped.append(line)
+        seen.add(lowered)
+    if not deduped:
+        return ""
+    compact = " ".join(deduped)
+    return re.sub(r"\s{2,}", " ", compact).strip()
+
+
+def _normalize_display_summary_v2(text: str) -> str:
+    if not text:
+        return ""
+    cleaned = _URL_SPLIT_PATTERN.sub("", str(text))
+    cleaned = re.sub(r"\s*/\s*링크\s+\d+건\s*$", "", cleaned)
+    cleaned = re.sub(r"^\s*링크\s+\d+건\s*[/\s]*", "", cleaned)
+
+    for pattern in _NOISE_SNIPPET_PATTERNS:
+        cleaned = pattern.sub("", cleaned)
+
+    lines: list[str] = []
+    raw_lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
+    for line in raw_lines:
+        lines.extend([chunk.strip() for chunk in _SENTENCE_END_PATTERN.split(line) if chunk.strip()])
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for line in lines:
+        lowered = line.lower()
+        if any(pattern.match(lowered) for pattern in _NOISE_LINE_PATTERNS):
+            continue
+        if any(pattern.match(lowered) for pattern in _NOISE_INLINE_PATTERNS):
+            continue
+        if lowered in seen:
+            continue
+        deduped.append(line)
+        seen.add(lowered)
+    if not deduped:
+        return ""
+    compact = " ".join(deduped)
+    return re.sub(r"\s{2,}", " ", compact).strip()
+
+
+_normalize_display_summary = _normalize_display_summary_v2
 
 
 @dataclass(frozen=True)
@@ -586,9 +646,12 @@ class CurationService:
         base = compact_text.strip()
         if not base and urls:
             url = urls[0]
-            base = _compact_url_for_title(url)
-            if not base:
-                base = url
+            if curation_type == "link":
+                base = "참고 링크"
+            else:
+                base = _compact_url_for_title(url)
+                if not base:
+                    base = url
         if not base and attachments:
             base = str(attachments[0].get("filename") or "첨부 파일")
         if not base:
@@ -606,7 +669,7 @@ class CurationService:
             if not sentences:
                 sentences = [signal]
             chunks.append(truncate_text(sentences[0], 180, suffix=" ..."))
-        if urls:
+        if not chunks and urls:
             if len(urls) == 1:
                 chunks.append(f"링크 1건")
             else:
