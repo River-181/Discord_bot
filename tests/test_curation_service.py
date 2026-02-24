@@ -167,7 +167,7 @@ def test_signal_noise_isolation_removes_repeated_lines_and_social_noise(tmp_path
     assert len(result.title) > 0
     # 링크 트래킹 파라미터 제거 후 중복도 제거되어야 함
     assert "utm_source" not in result.summary
-    assert result.title.count("instagram") > 0
+    assert "#instagram" in result.tags
 
 
 def test_extract_urls_deduplicates_and_normalizes_tracking(tmp_path: Path) -> None:
