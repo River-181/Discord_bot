@@ -219,6 +219,30 @@ def test_curation_summary_normalization_removes_inline_social_noise() -> None:
     assert normalized == "Sam Sifton, the host of The Morning"
 
 
+def test_curation_publish_format_matches_template(tmp_path: Path) -> None:
+    service = _make_service(tmp_path)
+    lines = service._build_published_message_lines(
+        title="[LINK] github.com/shanraisshan/claude-code-best-practice",
+        summary="AI 코드 리뷰와 협업 패턴 정리 가이드입니다. 적용 가능성이 높습니다.",
+        urls=["https://github.com/shanraisshan/claude-code-best-practice"],
+        author_id=286,
+        source_message_link="https://discord.com/channels/1/2/3",
+        mention_role=None,
+        mention_role_name="knowledge",
+        tags=["#curation", "#ai", "#github", "#link"],
+    )
+    content = "\n".join(lines)
+    assert content.startswith("훅: [LINK] github.com/shanraisshan/claude-code-best-practice")
+    assert "요약:" in content
+    assert "- AI 코드 리뷰와 협업 패턴 정리 가이드입니다." in content
+    assert "링크: https://github.com/shanraisshan/claude-code-best-practice" in content
+    assert "작성자: <@286>" in content
+    assert "원문: https://discord.com/channels/1/2/3" in content
+    assert "멘션: @knowledge" in content
+    assert content.endswith("#curation #ai #github #link")
+    assert "..." not in content
+
+
 def test_curation_build_summary_does_not_append_link_count_if_signal_exists(tmp_path: Path) -> None:
     service = _make_service(tmp_path)
     text = "아이디어 공유: 인터페이스 정리 링크를 참고하세요"

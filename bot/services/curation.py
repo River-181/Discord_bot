@@ -714,6 +714,77 @@ class CurationService:
             return f"🖼️ 제보 핵심 한 줄: `{clean_title}` / 비주얼 참고용 제보입니다. 톤/메시지 정합성 판단용으로 적합합니다. ({tag_hint})"
         return f"🧩 제보 핵심 한 줄: `{clean_title}` / 운영 판단이 필요한 인풋입니다. 지금 바로 분류/반영 여부를 정하세요. ({tag_hint})"
 
+    @staticmethod
+    def _build_publish_bullets(summary: str, *, max_items: int = 3, max_len: int = 120) -> list[str]:
+        normalized = _normalize_display_summary(summary)
+        if not normalized:
+            return ["내용을 추출하지 못했습니다."]
+
+        candidates = [chunk.strip() for chunk in re.split(r"\s*/\s+", normalized) if chunk.strip()]
+        if len(candidates) <= 1:
+            candidates = [chunk.strip() for chunk in _SENTENCE_END_PATTERN.split(normalized) if chunk.strip()]
+
+        if not candidates:
+            candidates = [normalized]
+
+        bullets: list[str] = []
+        seen: set[str] = set()
+        for item in candidates:
+            if len(bullets) >= max_items:
+                break
+            text = truncate_text(item, max_len, suffix="")
+            lowered = text.lower()
+            if lowered in seen:
+                continue
+            seen.add(lowered)
+            bullets.append(text)
+
+        if not bullets:
+            bullets = [truncate_text(normalized, max_len, suffix="")]
+        return bullets
+
+    @staticmethod
+    def _build_published_message_lines(
+        *,
+        title: str,
+        summary: str,
+        urls: list[str],
+        author_id: int,
+        source_message_link: str,
+        mention_role: discord.Role | None,
+        mention_role_name: str,
+        tags: list[str],
+    ) -> list[str]:
+        teaser = title or "큐레이션 제보"
+        summary_bullets = CurationService._build_publish_bullets(summary)
+        if not urls:
+            link_text = "없음"
+        else:
+            link_text = str(urls[0])
+            if len(urls) > 1:
+                link_text = f"{link_text} (총 {len(urls)}건)"
+
+        mention = mention_role.mention if mention_role else (f"@{mention_role_name}" if mention_role_name else "없음")
+        normalized_tags = [str(tag) for tag in tags[:12] if tag]
+        if not normalized_tags:
+            normalized_tags = ["#curation"]
+
+        lines = [
+            f"훅: {truncate_text(teaser, 120, suffix='')}",
+            "",
+            "요약:",
+            *[f"- {line}" for line in summary_bullets],
+            "",
+            f"링크: {link_text}",
+            "",
+            f"작성자: <@{author_id}>",
+            f"원문: {source_message_link or '-'}",
+            f"멘션: {mention}",
+            "",
+            " ".join(normalized_tags),
+        ]
+        return lines
+
     def _ai_enrich(
         self,
         *,
@@ -1315,48 +1386,33 @@ class CurationService:
 
         mention_role_name = self._mention_role_name(curation_type)
         mention_role = self._find_role_by_name(guild, mention_role_name)
-        mention_text = mention_role.mention if mention_role else ""
 
         tags = override_tags if override_tags is not None else list(submission.get("tags") or [])
-        tags_text = " ".join(str(x) for x in tags[:12]) if tags else "#curation"
         text = str(submission.get("raw_text") or "")
         urls = [str(x) for x in (submission.get("urls") or []) if str(x)]
         attachments = submission.get("attachments") if isinstance(submission.get("attachments"), list) else []
         fallback_title = self._build_title(curation_type, text, urls, attachments)
         title = self._sanitize_title(str(submission.get("normalized_title") or ""), fallback=fallback_title)
-        links_text = (
-            _short_url_display(str(urls[0])) if len(urls) == 1
-            else "\n".join(f"- {_short_url_display(str(u))}" for u in urls[:10])
-        ) if urls else "- 없음"
-        links_label = f"링크 ({len(urls)}건)"
-        if len(urls) <= 1:
-            links_label = "링크"
         summary = _normalize_display_summary(str(submission.get("normalized_summary") or ""))
-        link_summary_only = self._is_link_count_summary(summary)
         intro = self._curation_intro(curation_type)
-        teaser = self._one_sentence_teaser(curation_type, title, tags)
+        summary_source = summary or intro
+        summary_lines = self._build_publish_bullets(summary_source)
+        if summary and summary == "내용을 추출하지 못했습니다.":
+            summary_lines = [f"- {intro}"]
 
-        lines = [
-            f"🧠 망상궤도 큐레이션 - {title}",
-            f"작성자: <@{submission.get('author_id')}>",
-            teaser,
-            f"요약: {summary}" if summary and not link_summary_only else f"요약: {intro}",
-            "",
-            links_label,
-            links_text,
-            "",
-            f"태그: {tags_text}",
-            f"원문: {submission.get('source_message_link') or '-'}",
-        ]
-        if mention_text:
-            lines.append(f"멘션: {mention_text}")
-
-        if not summary or link_summary_only:
-            lines[3] = f"요약: {intro}"
-        content = "\n".join(line for line in lines if line is not None)
+        lines = self._build_published_message_lines(
+            title=truncate_text(title, 72, suffix=""),
+            summary="\n".join(summary_lines),
+            urls=urls,
+            author_id=int(submission.get("author_id") or 0),
+            source_message_link=str(submission.get("source_message_link") or ""),
+            mention_role=mention_role,
+            mention_role_name=mention_role_name,
+            tags=tags,
+        )
+        content = "\n".join(lines)
 
         files: list[discord.File] = []
-        attachment_urls: list[str] = [str(x.get("url")) for x in (submission.get("attachments") or []) if x.get("url")]
         if source_message and self._current_config()["attachment_reupload"]:
             for attachment in source_message.attachments[:8]:
                 try:
@@ -1364,13 +1420,10 @@ class CurationService:
                 except Exception:
                     continue
 
-        if not files and attachment_urls and self._current_config()["fallback_link_only_when_upload_fails"]:
-            content += "\n\n첨부 링크\n" + "\n".join(f"- {u}" for u in attachment_urls[:8])
-
         allowed_mentions = discord.AllowedMentions(users=True, roles=True, everyone=False)
         posted_message = await retry_discord_call(
             lambda: target_channel.send(
-                content=truncate_text(content, 1900, suffix=" ..."),
+                content=content,
                 suppress_embeds=True,
                 files=files if files else None,
                 allowed_mentions=allowed_mentions,
