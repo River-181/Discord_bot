@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 import discord
@@ -7,6 +8,24 @@ from discord import app_commands
 
 if TYPE_CHECKING:
     from bot.app import MangsangBot
+
+
+logger = logging.getLogger("mangsang-orbit-assistant")
+
+
+def _to_int_or_none(value: object) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _is_curation_admin(interaction: discord.Interaction) -> bool:
@@ -114,47 +133,73 @@ def register(bot: "MangsangBot") -> None:
 
         await interaction.response.defer(ephemeral=True, thinking=True)
 
-        submission = bot.curation_service.get_submission(submission_id)
-        if not submission:
-            await interaction.followup.send("submission_id를 찾을 수 없습니다.", ephemeral=True)
-            return
+        try:
+            submission = bot.curation_service.get_submission(submission_id)
+            if not submission:
+                await interaction.followup.send("submission_id를 찾을 수 없습니다.", ephemeral=True)
+                return
 
-        source_message = None
-        source_channel_id = int(submission.get("source_channel_id", 0) or 0)
-        source_message_id = int(submission.get("source_message_id", 0) or 0)
-        source_channel = interaction.guild.get_channel(source_channel_id)
-        if isinstance(source_channel, discord.TextChannel) and source_message_id:
+            source_message = None
+            source_channel_id = _to_int_or_none(submission.get("source_channel_id"))
+            source_message_id = _to_int_or_none(submission.get("source_message_id"))
+            if source_channel_id is not None and source_message_id:
+                source_channel = interaction.guild.get_channel(source_channel_id)
+            else:
+                source_channel = None
+            if isinstance(source_channel, discord.TextChannel) and source_message_id:
+                try:
+                    source_message = await source_channel.fetch_message(source_message_id)
+                except Exception:
+                    source_message = None
+
+            result = await bot.curation_service.publish_submission(
+                bot=bot,
+                guild=interaction.guild,
+                submission_id=submission_id,
+                reviewer_id=interaction.user.id,
+                override_channel_name=target.name if target else str(submission.get("override_channel", "")).strip() or None,
+                override_tags=list(submission.get("tags") or []),
+                source_message=source_message,
+                create_discussion_thread=create_thread,
+            )
+
+            if result.status == "approved":
+                extra = f" / thread_id={result.thread_id}" if result.thread_id else ""
+                await interaction.followup.send(
+                    f"게시 완료: <#{result.target_channel_id}> / message_id={result.target_message_id}{extra}",
+                    ephemeral=True,
+                )
+                return
+            if result.status == "merged":
+                await interaction.followup.send(
+                    f"중복 병합 완료: duplicate_of={result.merged_into_submission_id}",
+                    ephemeral=True,
+                )
+                return
+
+            await interaction.followup.send(f"게시 실패: {result.status}", ephemeral=True)
+        except Exception as exc:  # pragma: no cover - interaction-level hardening
+            logger.exception("curation_publish failed: %s", exc)
             try:
-                source_message = await source_channel.fetch_message(source_message_id)
+                await bot.storage.append_ops_event(
+                    "curation_publish_failed",
+                    {
+                        "guild_id": interaction.guild.id if interaction.guild else None,
+                        "channel_id": interaction.channel.id if interaction.channel else None,
+                        "user_id": interaction.user.id,
+                        "command_name": "curation_publish",
+                        "submission_id": submission_id,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    },
+                    idempotency_key=f"curation_publish_failed:{submission_id}:{interaction.user.id}:{type(exc).__name__}",
+                )
             except Exception:
-                source_message = None
+                logger.debug("failed to append curation_publish_failed event", exc_info=True)
 
-        result = await bot.curation_service.publish_submission(
-            bot=bot,
-            guild=interaction.guild,
-            submission_id=submission_id,
-            reviewer_id=interaction.user.id,
-            override_channel_name=target.name if target else str(submission.get("override_channel", "")).strip() or None,
-            override_tags=list(submission.get("tags") or []),
-            source_message=source_message,
-            create_discussion_thread=create_thread,
-        )
-
-        if result.status == "approved":
-            extra = f" / thread_id={result.thread_id}" if result.thread_id else ""
-            await interaction.followup.send(
-                f"게시 완료: <#{result.target_channel_id}> / message_id={result.target_message_id}{extra}",
-                ephemeral=True,
-            )
-            return
-        if result.status == "merged":
-            await interaction.followup.send(
-                f"중복 병합 완료: duplicate_of={result.merged_into_submission_id}",
-                ephemeral=True,
-            )
-            return
-
-        await interaction.followup.send(f"게시 실패: {result.status}", ephemeral=True)
+            if interaction.response.is_done():
+                await interaction.followup.send(f"게시 실패: {type(exc).__name__}", ephemeral=True)
+            else:
+                await interaction.response.send_message(f"게시 실패: {type(exc).__name__}", ephemeral=True)
 
     @app_commands.command(name="curation_reject", description="승인 대기 submission을 반려합니다. (운영자 전용)")
     @app_commands.describe(submission_id="반려할 submission_id", reason="반려 사유")

@@ -232,6 +232,19 @@ def test_curation_summary_normalization_removes_repeated_profile_copy(tmp_path: 
     assert normalized.count("Sam Sifton") == 1
 
 
+def test_curation_summary_normalization_removes_social_footer_noise(tmp_path: Path) -> None:
+    service = _make_service(tmp_path)
+    raw = (
+        "GitHub MCP 관련 리포지토리 링크입니다. Sam Sifton, the host of The Morning, was previously an assistant managing editor."
+        " discussion-2f38b6a0 "
+        "Portrait of Sam Sifton"
+    )
+    summary = service._build_summary(raw, ["https://example.com"], [])
+    normalized = _normalize_display_summary(summary)
+    assert "discussion-" not in normalized.lower()
+    assert "Portrait of Sam Sifton" not in normalized
+
+
 def test_curation_publish_format_matches_template(tmp_path: Path) -> None:
     service = _make_service(tmp_path)
     lines = service._build_published_message_lines(

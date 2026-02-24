@@ -75,6 +75,9 @@ _NOISE_LINE_PATTERNS = [
     re.compile(r"^\s*팔로워\b.*", re.IGNORECASE),
     re.compile(r"^\s*공유\b.*", re.IGNORECASE),
     re.compile(r"^\s*조회수?\b.*", re.IGNORECASE),
+    re.compile(r"^\s*discussion-[0-9a-zA-Z-]+\s*$", re.IGNORECASE),
+    re.compile(r"^\s*portrait of .*", re.IGNORECASE),
+    re.compile(r"^\s*photo by .*", re.IGNORECASE),
 ]
 _NOISE_INLINE_PATTERNS = [
     re.compile(r"^\s*\d+\s*개?의?\s*좋아요.*", re.IGNORECASE),
@@ -88,6 +91,7 @@ _NOISE_SNIPPET_PATTERNS = [
     re.compile(r"\b댓글\b", re.IGNORECASE),
     re.compile(r"\b공유\b", re.IGNORECASE),
     re.compile(r"\b팔로워\b", re.IGNORECASE),
+    re.compile(r"\bdiscussion-[0-9a-zA-Z-]+\b", re.IGNORECASE),
 ]
 _TRACKING_PARAM_PATTERNS = [
     re.compile(r"^utm_[^=]+"),
@@ -336,6 +340,23 @@ class CurationService:
         self._client = None
         if gemini_api_key and genai:
             self._client = genai.Client(api_key=gemini_api_key)
+
+    @staticmethod
+    def _to_int_or_none(value: Any) -> int | None:
+        if value is None:
+            return None
+        if isinstance(value, int):
+            return value
+        try:
+            raw = str(value).strip()
+        except Exception:
+            return None
+        if not raw:
+            return None
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return None
 
     def diagnostics(self) -> CurationDiagnostics:
         cfg = self._current_config()
@@ -753,27 +774,25 @@ class CurationService:
             first_line = [line.strip() for line in re.split(r"\n|\r", summary_text) if line.strip()]
             if first_line:
                 return truncate_text(first_line[0], 140, suffix="")
-
-        type_tag = curation_type.upper()
-        tag_hint = " · ".join(t for t in (tags or [])[:2]) or "#curation"
-        compact_title = self._sanitize_title(title, fallback=f"[{type_tag}] 큐레이션 제보")
-        return f"{compact_title} 제보입니다. ({tag_hint})"
+        return self._one_sentence_teaser(curation_type, title, tags)
 
     def _one_sentence_teaser(self, curation_type: str, title: str, tags: list[str]) -> str:
         type_label = str(curation_type).lower()
-        tag_hint = " · ".join(t for t in (tags or [])[:2]) or "#curation"
+        tag_hint = " ".join(t for t in (tags or [])[:3] if str(t).startswith("#"))
+        if not tag_hint:
+            tag_hint = "#curation"
         clean_title = self._sanitize_title(title, fallback="[큐레이션]")
         if type_label == "link":
-            return f"🧠 제보 핵심 한 줄: `{clean_title}` / 참고 링크가 도착했습니다. 적용 가능 항목인지 빠르게 판단하세요. ({tag_hint})"
+            return f"핵심: {clean_title} / 링크 제보를 빠르게 분류하고 적용 여부를 판단하세요. {tag_hint}"
         if type_label == "idea":
-            return f"🚀 제보 핵심 한 줄: `{clean_title}` / 아이디어로 바로 연결 가능한 제안입니다. 실행 포인트를 골라보세요. ({tag_hint})"
+            return f"핵심: {clean_title} / 실행 가능한 아이디어 제보입니다. {tag_hint}"
         if type_label == "music":
-            return f"🎧 제보 핵심 한 줄: `{clean_title}` / 음악/사운드 관련 자원입니다. 콘텐츠 운영에 바로 연결해도 좋습니다. ({tag_hint})"
+            return f"핵심: {clean_title} / 음악/사운드 제보입니다. 실사용 적합도를 중심으로 검토하세요. {tag_hint}"
         if type_label == "youtube":
-            return f"🎬 제보 핵심 한 줄: `{clean_title}` / 참고 가능한 영상 제보입니다. 체크포인트를 바로 정리해보세요. ({tag_hint})"
+            return f"핵심: {clean_title} / 유튜브 제보입니다. 영상 핵심만 빠르게 반영하세요. {tag_hint}"
         if type_label == "photo":
-            return f"🖼️ 제보 핵심 한 줄: `{clean_title}` / 비주얼 참고용 제보입니다. 톤/메시지 정합성 판단용으로 적합합니다. ({tag_hint})"
-        return f"🧩 제보 핵심 한 줄: `{clean_title}` / 운영 판단이 필요한 인풋입니다. 지금 바로 분류/반영 여부를 정하세요. ({tag_hint})"
+            return f"핵심: {clean_title} / 시각 자료 제보입니다. 톤/메시지 정합성 검토 포인트로 봐주세요. {tag_hint}"
+        return f"핵심: {clean_title} / 제보 카테고리 기준으로 운영 판단이 필요합니다. {tag_hint}"
 
     @staticmethod
     def _build_publish_bullets(summary: str, *, max_items: int = 3, max_len: int = 120) -> list[str]:
@@ -794,10 +813,10 @@ class CurationService:
             if len(bullets) >= max_items:
                 break
             text = truncate_text(item, max_len, suffix="")
-            lowered = text.lower()
-            if lowered in seen:
+            key = _dedupe_key(text)
+            if not text or key in seen:
                 continue
-            seen.add(lowered)
+            seen.add(key)
             bullets.append(text)
 
         if not bullets:
@@ -828,7 +847,8 @@ class CurationService:
         else:
             link_text = str(urls[0])
 
-        mention = mention_role.mention if mention_role else (f"@{mention_role_name}" if mention_role_name else "없음")
+        _ = mention_role
+        mention = f"@{mention_role_name}" if mention_role_name else "없음"
         normalized_tags = [str(tag) for tag in tags[:12] if tag]
         if not normalized_tags:
             normalized_tags = ["#curation"]
@@ -1332,9 +1352,11 @@ class CurationService:
     ) -> PublishResult:
         posts = self._latest_posts_by_submission()
         target_post = posts.get(str(duplicate_target.get("submission_id")))
-        channel_id = int(target_post.get("target_channel_id", 0)) if target_post else 0
-        message_id = int(target_post.get("target_message_id", 0)) if target_post else 0
-        thread_id = int(target_post.get("thread_id", 0)) if target_post else 0
+        channel_id = self._to_int_or_none(target_post.get("target_channel_id", 0)) if target_post else None
+        message_id = self._to_int_or_none(target_post.get("target_message_id", 0)) if target_post else None
+        thread_id = self._to_int_or_none(target_post.get("thread_id", 0)) if target_post else None
+        source_channel_id = self._to_int_or_none(submission.get("source_channel_id", 0))
+        notify_channel_id = channel_id or source_channel_id or None
 
         target_channel = guild.get_channel(channel_id) if channel_id else None
         notified = False
@@ -1368,7 +1390,7 @@ class CurationService:
                 "curation_merged_duplicate",
                 {
                     "guild_id": guild.id,
-                    "channel_id": channel_id or submission.get("source_channel_id"),
+                    "channel_id": notify_channel_id,
                     "user_id": reviewer_id,
                     "command_name": "curation_publish",
                     "submission_id": submission.get("submission_id"),
@@ -1390,7 +1412,7 @@ class CurationService:
             "curation_merged_duplicate",
             {
                 "guild_id": guild.id,
-                "channel_id": channel_id or submission.get("source_channel_id"),
+                "channel_id": notify_channel_id,
                 "user_id": reviewer_id,
                 "command_name": "curation_publish",
                 "submission_id": submission.get("submission_id"),
@@ -1404,8 +1426,8 @@ class CurationService:
         return PublishResult(
             status="merged",
             submission_id=str(submission.get("submission_id")),
-            target_channel_id=channel_id or None,
-            target_message_id=message_id or None,
+            target_channel_id=channel_id,
+            target_message_id=message_id,
             thread_id=thread_id,
             merged_into_submission_id=str(duplicate_target.get("submission_id")),
         )

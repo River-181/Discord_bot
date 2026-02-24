@@ -1,11 +1,30 @@
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 import discord
 
 if TYPE_CHECKING:
     from bot.app import MangsangBot
+
+
+logger = logging.getLogger("mangsang-orbit-assistant")
+
+
+def _to_int_or_none(value: object) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 class _ChannelModal(discord.ui.Modal, title="게시 채널 변경"):
@@ -124,48 +143,74 @@ class CurationReviewView(discord.ui.View):
 
         await interaction.response.defer(ephemeral=True, thinking=True)
 
-        source_message = None
-        submission = self.bot.curation_service.get_submission(self.submission_id)
-        if submission:
-            source_channel_id = int(submission.get("source_channel_id", 0) or 0)
-            source_message_id = int(submission.get("source_message_id", 0) or 0)
-            channel = interaction.guild.get_channel(source_channel_id)
-            if isinstance(channel, discord.TextChannel) and source_message_id:
-                try:
-                    source_message = await channel.fetch_message(source_message_id)
-                except Exception:
-                    source_message = None
+        try:
+            source_message = None
+            submission = self.bot.curation_service.get_submission(self.submission_id)
+            if submission:
+                source_channel_id = _to_int_or_none(submission.get("source_channel_id"))
+                source_message_id = _to_int_or_none(submission.get("source_message_id"))
+                channel: discord.TextChannel | None = None
+                if source_channel_id is not None:
+                    channel = interaction.guild.get_channel(source_channel_id)
+                if isinstance(channel, discord.TextChannel) and source_message_id:
+                    try:
+                        source_message = await channel.fetch_message(source_message_id)
+                    except Exception:
+                        source_message = None
 
-        result = await self.bot.curation_service.publish_submission(
-            bot=self.bot,
-            guild=interaction.guild,
-            submission_id=self.submission_id,
-            reviewer_id=interaction.user.id,
-            override_channel_name=str(submission.get("override_channel", "")).strip() if submission else None,
-            override_tags=list(submission.get("tags") or []) if submission else None,
-            source_message=source_message,
-            create_discussion_thread=create_thread,
-        )
-
-        updated = self.bot.curation_service.get_submission(self.submission_id)
-        if updated:
-            await self.refresh_message(interaction, updated)
-
-        if result.status == "approved":
-            suffix = f" / thread_id={result.thread_id}" if result.thread_id else ""
-            await interaction.followup.send(
-                f"승인 완료: <#{result.target_channel_id}> 에 게시했습니다. message_id={result.target_message_id}{suffix}",
-                ephemeral=True,
+            result = await self.bot.curation_service.publish_submission(
+                bot=self.bot,
+                guild=interaction.guild,
+                submission_id=self.submission_id,
+                reviewer_id=interaction.user.id,
+                override_channel_name=str(submission.get("override_channel", "")).strip() if submission else None,
+                override_tags=list(submission.get("tags") or []) if submission else None,
+                source_message=source_message,
+                create_discussion_thread=create_thread,
             )
-            return
-        if result.status == "merged":
-            await interaction.followup.send(
-                f"중복 병합 완료: duplicate_of={result.merged_into_submission_id}",
-                ephemeral=True,
-            )
-            return
 
-        await interaction.followup.send(f"승인 실패: {result.status}", ephemeral=True)
+            updated = self.bot.curation_service.get_submission(self.submission_id)
+            if updated:
+                await self.refresh_message(interaction, updated)
+
+            if result.status == "approved":
+                suffix = f" / thread_id={result.thread_id}" if result.thread_id else ""
+                await interaction.followup.send(
+                    f"승인 완료: <#{result.target_channel_id}> 에 게시했습니다. message_id={result.target_message_id}{suffix}",
+                    ephemeral=True,
+                )
+                return
+            if result.status == "merged":
+                await interaction.followup.send(
+                    f"중복 병합 완료: duplicate_of={result.merged_into_submission_id}",
+                    ephemeral=True,
+                )
+                return
+
+            await interaction.followup.send(f"승인 실패: {result.status}", ephemeral=True)
+        except Exception as exc:  # pragma: no cover - defensive for interaction-level failures
+            logger.exception("curation approve interaction failed: %s", exc)
+            try:
+                await self.bot.storage.append_ops_event(
+                    "curation_publish_failed",
+                    {
+                        "guild_id": interaction.guild.id,
+                        "channel_id": interaction.channel.id if interaction.channel else None,
+                        "user_id": interaction.user.id,
+                        "command_name": "curation_approve",
+                        "submission_id": self.submission_id,
+                        "create_thread": create_thread,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    },
+                    idempotency_key=f"curation_approve_failed:{self.submission_id}:{interaction.user.id}:{type(exc).__name__}",
+                )
+            except Exception:
+                logger.debug("failed to append curation publish failed event", exc_info=True)
+
+            if interaction.response.is_done():
+                await interaction.followup.send(f"승인 처리 중 오류가 발생했습니다: {type(exc).__name__}", ephemeral=True)
+            else:
+                await interaction.response.send_message(f"승인 처리 중 오류가 발생했습니다: {type(exc).__name__}", ephemeral=True)
 
     @discord.ui.button(label="승인", style=discord.ButtonStyle.success, row=0)
     async def approve(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:  # noqa: ARG002
