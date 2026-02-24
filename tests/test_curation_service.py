@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from bot.services.curation import CurationService
+from bot.services.curation import CurationService, _normalize_display_summary, _short_url_display, _strip_urls_for_title
 from bot.services.storage import DataFiles, StorageService
 
 
@@ -185,6 +185,20 @@ def test_should_detect_candidate(tmp_path: Path) -> None:
     service = _make_service(tmp_path)
     msg = _DummyMessage("아이디어: 다음 주 운영 개선")
     assert service.is_curation_candidate(msg) is True
+
+
+def test_curation_summary_display_normalization() -> None:
+    raw = "핵심 링크 정리입니다. https://github.com/shanraisshan/claude-code-best-practice / 링크 1건"
+    normalized = _normalize_display_summary(raw)
+    assert "https://" not in normalized
+    assert normalized == "핵심 링크 정리입니다."
+
+
+def test_curation_title_without_redundant_url() -> None:
+    title = _strip_urls_for_title("https://github.com/shanraisshan/claude-code-best-practice")
+    assert title == ""
+    short = _short_url_display("https://github.com/shanraisshan/claude-code-best-practice")
+    assert short == "github.com/shanraisshan/claude-code-best-practice"
 
 
 def test_counts_latest_status(tmp_path: Path) -> None:

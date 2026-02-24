@@ -163,11 +163,11 @@ _LINK_HINTS = {"링크", "자료", "유용", "참고", "유익", "공유"}
 
 
 _TYPE_INTRO = {
-    "link": "유용한 링크를 제보해줬어요. 바로 한 번 스캔해보면 좋아요.",
-    "idea": "아이디어 제보가 들어왔어요. 바로 확인하면 바로 쓸 수 있어요.",
-    "music": "음악/콘텐츠 제보가 들어왔어요. 큐에 넣어볼 만한 후보예요.",
-    "youtube": "유튜브 콘텐츠 제보입니다. 핵심 포인트를 먼저 보면 좋아요.",
-    "photo": "이미지/비주얼 제보가 들어왔어요. 먼저 느낌을 확인해보세요.",
+    "link": "⚡ 한 번 들어볼 만한 링크가 왔어요. 핵심만 깔끔하게 골라보겠습니다.",
+    "idea": "🚀 아이디어 제보가 왔어요. 바로 적용 가능한 포인트가 보여요.",
+    "music": "🎧 음악 콘텐츠 제보가 왔어요. 기획/운영에서 바로 쓸 수 있는 후보예요.",
+    "youtube": "🎬 유튜브 제보가 왔어요. 핵심 내용을 우선 정리해드릴게요.",
+    "photo": "🖼️ 비주얼 제보가 왔어요. 톤과 메시지 기준으로 빠르게 검토하면 좋아요.",
 }
 
 
@@ -190,6 +190,27 @@ def _compact_url_for_title(value: str) -> str:
 
 def _strip_urls_for_title(text: str) -> str:
     return _URL_SPLIT_PATTERN.sub("", text or "").strip()
+
+
+def _short_url_display(url: str) -> str:
+    try:
+        parsed = urlparse(url)
+        host = (parsed.netloc or "").replace("www.", "")
+        path = (parsed.path or "").strip("/")
+        if path:
+            return f"{host}/{path}"
+        return host or url
+    except Exception:
+        return url
+
+
+def _normalize_display_summary(text: str) -> str:
+    if not text:
+        return ""
+    cleaned = _URL_SPLIT_PATTERN.sub("", str(text))
+    cleaned = re.sub(r"\s*/\s*링크\s+\d+건\s*$", "", cleaned)
+    cleaned = re.sub(r"^링크\s+\d+건\s*[/\s]*", "", cleaned)
+    return re.sub(r"\s{2,}", " ", cleaned).strip()
 
 
 @dataclass(frozen=True)
@@ -599,6 +620,13 @@ class CurationService:
         return " / ".join(chunks) if chunks else "내용 요약 없음"
 
     @staticmethod
+    def _sanitize_title(text: str, fallback: str) -> str:
+        cleaned = _strip_urls_for_title(text)
+        if not cleaned:
+            cleaned = fallback
+        return truncate_text(cleaned.replace("\n", " ").strip(), 72, suffix="")
+
+    @staticmethod
     def _is_link_count_summary(value: str) -> bool:
         stripped = (value or "").strip()
         return bool(re.match(r"^링크\s+\d+건(?:\s*/\s*)?$", stripped))
@@ -651,8 +679,15 @@ class CurationService:
             tags = [str(x).strip() for x in tags_raw if str(x).strip().startswith("#")][:8]
             if not title:
                 title = self._build_title(curation_type, text, urls, attachments)
+            else:
+                title = self._sanitize_title(
+                    title,
+                    fallback=self._build_title(curation_type, text, urls, attachments),
+                )
             if not summary:
                 summary = self._build_summary(text, urls, attachments)
+            else:
+                summary = _normalize_display_summary(summary)
             if not tags:
                 tags = self._simple_tags(text, curation_type, urls)
             return ClassificationResult(
@@ -945,7 +980,7 @@ class CurationService:
     def build_review_embed(self, submission: dict[str, Any], guild: discord.Guild | None = None) -> discord.Embed:
         curation_type = str(submission.get("classified_type", "idea"))
         title = str(submission.get("normalized_title") or f"[{curation_type.upper()}] 새 제보")
-        summary = str(submission.get("normalized_summary") or "")
+        summary = _normalize_display_summary(str(submission.get("normalized_summary") or ""))
         tags = submission.get("tags") if isinstance(submission.get("tags"), list) else []
         urls = submission.get("urls") if isinstance(submission.get("urls"), list) else []
         attachments = submission.get("attachments") if isinstance(submission.get("attachments"), list) else []
@@ -955,9 +990,11 @@ class CurationService:
 
         intro = self._curation_intro(curation_type)
 
+        author = submission.get("author_id")
+        author_line = f"작성자 <@{author}>" if author else "작성자 미확인"
         embed = discord.Embed(
             title="🗂️ 큐레이션 승인 대기",
-            description=f"**{title}**\n{intro}",
+            description=f"{author_line}\n**{title}**\n{intro}",
             color=discord.Colour.orange(),
         )
         embed.add_field(name="분류", value=curation_type, inline=True)
@@ -970,7 +1007,7 @@ class CurationService:
         if tags:
             embed.add_field(name="태그", value=" ".join(str(x) for x in tags[:12]), inline=False)
         if urls:
-            preview = "\n".join(f"- {u}" for u in urls[:6])
+            preview = "\n".join(f"- {_short_url_display(str(u))}" for u in urls[:6])
             embed.add_field(name="링크", value=truncate_text(preview, 1024), inline=False)
         if attachments:
             preview = "\n".join(f"- {a.get('filename')}" for a in attachments[:6])
@@ -1191,26 +1228,28 @@ class CurationService:
         tags = override_tags if override_tags is not None else list(submission.get("tags") or [])
         tags_text = " ".join(str(x) for x in tags[:12]) if tags else "#curation"
         urls = [str(x) for x in (submission.get("urls") or []) if str(x)]
-        links_text = "\n".join(f"- {u}" for u in urls[:10]) if urls else "- 없음"
-        summary = str(submission.get("normalized_summary") or "").strip()
+        links_text = "\n".join(f"- {_short_url_display(str(u))}" for u in urls[:10]) if urls else "- 없음"
+        summary = _normalize_display_summary(str(submission.get("normalized_summary") or ""))
         link_summary_only = self._is_link_count_summary(summary)
+        intro = self._curation_intro(curation_type)
 
         lines = [
             f"🧠 망상궤도 큐레이션 - {str(submission.get('normalized_title') or '[IDEA] 새 제보')}",
-            str(submission.get("normalized_summary") or "").strip(),
+            f"작성자: <@{submission.get('author_id')}>",
+            intro,
+            f"요약: {summary}" if summary and not link_summary_only else f"요약: {intro}",
             "",
-            "링크",
+            f"링크 ({len(urls)}건)",
             links_text,
             "",
             f"태그: {tags_text}",
-            f"작성자: <@{submission.get('author_id')}>",
             f"원문: {submission.get('source_message_link') or '-'}",
         ]
         if mention_text:
             lines.append(f"멘션: {mention_text}")
 
         if not summary or link_summary_only:
-            lines[1] = self._curation_intro(curation_type)
+            lines[2] = intro
         content = "\n".join(line for line in lines if line is not None)
 
         files: list[discord.File] = []
