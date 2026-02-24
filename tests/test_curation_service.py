@@ -201,6 +201,34 @@ def test_curation_title_without_redundant_url() -> None:
     assert short == "github.com/shanraisshan/claude-code-best-practice"
 
 
+def test_curation_title_generated_from_url_only_is_compact(tmp_path: Path) -> None:
+    service = _make_service(tmp_path)
+    text = "https://github.com/shanraisshan/claude-code-best-practice"
+    title = service._build_title("link", text, [text], [])
+    assert title == "[LINK] github.com/claude-code-best-practice"
+
+
+def test_review_embed_title_does_not_include_raw_url(tmp_path: Path) -> None:
+    service = _make_service(tmp_path)
+    submission = {
+        "submission_id": "s1",
+        "classified_type": "link",
+        "raw_text": "https://github.com/shanraisshan/claude-code-best-practice",
+        "urls": ["https://github.com/shanraisshan/claude-code-best-practice"],
+        "attachments": [],
+        "normalized_title": "",
+        "normalized_summary": "링크 1건",
+        "tags": ["#ai", "#curation"],
+        "source_message_link": "https://discord.com/channels/1/2/3",
+        "status": "pending",
+        "author_id": 10,
+        "normalization_profile": "compact_v2",
+        "classification_reason": "rules",
+    }
+    embed = service.build_review_embed(submission, guild=None)
+    assert "https://github.com/shanraisshan/claude-code-best-practice" not in embed.description
+
+
 def test_counts_latest_status(tmp_path: Path) -> None:
     service = _make_service(tmp_path)
 

@@ -979,7 +979,11 @@ class CurationService:
 
     def build_review_embed(self, submission: dict[str, Any], guild: discord.Guild | None = None) -> discord.Embed:
         curation_type = str(submission.get("classified_type", "idea"))
-        title = str(submission.get("normalized_title") or f"[{curation_type.upper()}] 새 제보")
+        text = str(submission.get("raw_text") or "")
+        urls = [str(x) for x in (submission.get("urls") or []) if str(x)]
+        attachments = submission.get("attachments") if isinstance(submission.get("attachments"), list) else []
+        fallback_title = self._build_title(curation_type, text, urls, attachments)
+        title = self._sanitize_title(str(submission.get("normalized_title") or ""), fallback=fallback_title)
         summary = _normalize_display_summary(str(submission.get("normalized_summary") or ""))
         tags = submission.get("tags") if isinstance(submission.get("tags"), list) else []
         urls = submission.get("urls") if isinstance(submission.get("urls"), list) else []
@@ -1113,8 +1117,14 @@ class CurationService:
         target_channel = guild.get_channel(channel_id) if channel_id else None
         notified = False
         if isinstance(target_channel, discord.TextChannel) and message_id:
-            title = submission.get("normalized_title") or "[제보] 새 제보"
-            curation_type = str(submission.get("classified_type", "idea"))
+            text = str(submission.get("raw_text") or "")
+            urls = [str(x) for x in (submission.get("urls") or []) if str(x)]
+            attachments = submission.get("attachments") if isinstance(submission.get("attachments"), list) else []
+            curation_type = str(submission.get("classified_type", "idea")).lower()
+            if curation_type not in _ALLOWED_TYPES:
+                curation_type = "idea"
+            fallback_title = self._build_title(curation_type, text, urls, attachments)
+            title = self._sanitize_title(str(submission.get("normalized_title") or ""), fallback=fallback_title)
             intro = self._curation_intro(curation_type)
             text_lines = [
                 f"🔁 이미 큐레이션된 항목입니다. 새 제보는 병합 저장됐습니다.",
@@ -1127,6 +1137,7 @@ class CurationService:
             await retry_discord_call(
                 lambda: target_channel.send(
                     "\n".join(line for line in text_lines if line is not None),
+                    suppress_embeds=True,
                 )
             )
             notified = True
@@ -1229,16 +1240,20 @@ class CurationService:
 
         tags = override_tags if override_tags is not None else list(submission.get("tags") or [])
         tags_text = " ".join(str(x) for x in tags[:12]) if tags else "#curation"
+        text = str(submission.get("raw_text") or "")
         urls = [str(x) for x in (submission.get("urls") or []) if str(x)]
+        attachments = submission.get("attachments") if isinstance(submission.get("attachments"), list) else []
+        fallback_title = self._build_title(curation_type, text, urls, attachments)
+        title = self._sanitize_title(str(submission.get("normalized_title") or ""), fallback=fallback_title)
         links_text = "\n".join(f"- {_short_url_display(str(u))}" for u in urls[:10]) if urls else "- 없음"
         summary = _normalize_display_summary(str(submission.get("normalized_summary") or ""))
         link_summary_only = self._is_link_count_summary(summary)
         intro = self._curation_intro(curation_type)
 
         lines = [
-            f"🧠 망상궤도 큐레이션 - {str(submission.get('normalized_title') or '[IDEA] 새 제보')}",
+            f"🧠 망상궤도 큐레이션 - {title}",
             f"작성자: <@{submission.get('author_id')}>",
-            intro,
+            f"요약형: {intro}",
             f"요약: {summary}" if summary and not link_summary_only else f"요약: {intro}",
             "",
             f"링크 ({len(urls)}건)",
@@ -1251,7 +1266,7 @@ class CurationService:
             lines.append(f"멘션: {mention_text}")
 
         if not summary or link_summary_only:
-            lines[2] = intro
+            lines[2] = f"요약형: {intro}"
         content = "\n".join(line for line in lines if line is not None)
 
         files: list[discord.File] = []
@@ -1270,23 +1285,13 @@ class CurationService:
         posted_message = await retry_discord_call(
             lambda: target_channel.send(
                 content=truncate_text(content, 1900, suffix=" ..."),
+                suppress_embeds=True,
                 files=files if files else None,
                 allowed_mentions=allowed_mentions,
             )
         )
 
         thread_id: int | None = None
-        if curation_type != "link":
-            try:
-                thread = await retry_discord_call(
-                    lambda: posted_message.create_thread(
-                        name=f"discussion-{submission_id[:8]}",
-                        auto_archive_duration=1440,
-                    )
-                )
-                thread_id = thread.id
-            except Exception:
-                thread_id = None
 
         post_payload = {
             "post_id": str(uuid.uuid4()),
