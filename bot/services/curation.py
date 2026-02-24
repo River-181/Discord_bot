@@ -1111,39 +1111,41 @@ class CurationService:
         thread_id = int(target_post.get("thread_id", 0)) if target_post else 0
 
         target_channel = guild.get_channel(channel_id) if channel_id else None
+        notified = False
         if isinstance(target_channel, discord.TextChannel) and message_id:
-            text = "\n".join(
-                [
-                    "🔁 기존 항목과 중복 제보가 추가되었습니다.",
-                    f"제보자: <@{submission.get('author_id')}>",
-                    f"submission_id: `{submission.get('submission_id')}`",
-                    f"원문: {submission.get('source_message_link') or '-'}",
-                ]
+            title = submission.get("normalized_title") or "[제보] 새 제보"
+            curation_type = str(submission.get("classified_type", "idea"))
+            intro = self._curation_intro(curation_type)
+            text_lines = [
+                f"🔁 이미 큐레이션된 항목입니다. 새 제보는 병합 저장됐습니다.",
+                f"제목: {title}",
+                f"{intro}",
+                f"작성자: <@{submission.get('author_id')}>",
+                f"원문: {submission.get('source_message_link') or '-'}",
+            ]
+
+            await retry_discord_call(
+                lambda: target_channel.send(
+                    "\n".join(line for line in text_lines if line is not None),
+                )
             )
-
-            thread: discord.Thread | None = None
-            if thread_id:
-                fetched = guild.get_thread(thread_id)
-                if isinstance(fetched, discord.Thread):
-                    thread = fetched
-
-            if thread is None:
-                try:
-                    origin_message = await retry_discord_call(lambda: target_channel.fetch_message(message_id))
-                    thread = await retry_discord_call(
-                        lambda: origin_message.create_thread(
-                            name=f"dup-{str(duplicate_target.get('submission_id'))[:8]}",
-                            auto_archive_duration=1440,
-                        )
-                    )
-                    thread_id = thread.id
-                except Exception:
-                    thread = None
-
-            if thread:
-                await retry_discord_call(lambda: thread.send(text))
-            else:
-                await retry_discord_call(lambda: target_channel.send(text))
+            notified = True
+        if not notified:
+            await self.storage.append_ops_event(
+                "curation_merged_duplicate",
+                {
+                    "guild_id": guild.id,
+                    "channel_id": channel_id or submission.get("source_channel_id"),
+                    "user_id": reviewer_id,
+                    "command_name": "curation_publish",
+                    "submission_id": submission.get("submission_id"),
+                    "duplicate_of": duplicate_target.get("submission_id"),
+                    "target_message_id": message_id or None,
+                    "thread_id": thread_id or None,
+                    "result": "no_target_channel",
+                },
+                idempotency_key=f"curation_merge_orphan:{submission.get('submission_id')}:{duplicate_target.get('submission_id')}",
+            )
 
         updated = dict(submission)
         updated["status"] = "merged"
@@ -1274,16 +1276,17 @@ class CurationService:
         )
 
         thread_id: int | None = None
-        try:
-            thread = await retry_discord_call(
-                lambda: posted_message.create_thread(
-                    name=f"discussion-{submission_id[:8]}",
-                    auto_archive_duration=1440,
+        if curation_type != "link":
+            try:
+                thread = await retry_discord_call(
+                    lambda: posted_message.create_thread(
+                        name=f"discussion-{submission_id[:8]}",
+                        auto_archive_duration=1440,
+                    )
                 )
-            )
-            thread_id = thread.id
-        except Exception:
-            thread_id = None
+                thread_id = thread.id
+            except Exception:
+                thread_id = None
 
         post_payload = {
             "post_id": str(uuid.uuid4()),
