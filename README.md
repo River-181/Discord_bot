@@ -192,7 +192,7 @@ cd /Users/river/tools/mangsang-orbit-assistant
 - `/news_config`
 - `/curation_status`
 - `/curation_config mode:{approve|auto} intake_channel:#channel`
-- `/curation_publish submission_id:str target:#channel(optional)`
+- `/curation_publish submission_id:str target:#channel(optional) create_thread:bool(optional, default false)`
 - `/curation_reject submission_id:str reason:str`
 - `/event_reminder_status`
 - `/event_reminder_config enabled:bool reminder_minutes:int send_dm:bool`

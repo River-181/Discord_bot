@@ -170,6 +170,12 @@ _NORMALIZATION_PROFILE = "compact_v2"
 _LINK_HINTS = {"링크", "자료", "유용", "참고", "유익", "공유"}
 
 
+def _dedupe_key(value: str) -> str:
+    lowered = value.lower()
+    lowered = re.sub(r"[^\w가-힣]+", "", lowered)
+    return re.sub(r"\s+", "", lowered)
+
+
 _TYPE_INTRO = {
     "link": "⚡ 한 번 들어볼 만한 링크가 왔어요. 핵심만 깔끔하게 골라보겠습니다.",
     "idea": "🚀 아이디어 제보가 왔어요. 바로 적용 가능한 포인트가 보여요.",
@@ -218,6 +224,7 @@ def _normalize_display_summary(text: str) -> str:
     cleaned = _URL_SPLIT_PATTERN.sub("", str(text))
     cleaned = re.sub(r"\s*/\s*링크\s+\d+건\s*$", "", cleaned)
     cleaned = re.sub(r"^링크\s+\d+건\s*[/\s]*", "", cleaned)
+
     lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
     deduped: list[str] = []
     seen: set[str] = set()
@@ -227,10 +234,11 @@ def _normalize_display_summary(text: str) -> str:
             continue
         if any(pattern.match(lowered) for pattern in _NOISE_INLINE_PATTERNS):
             continue
-        if lowered in seen:
+        key = _dedupe_key(line)
+        if key in seen:
             continue
         deduped.append(line)
-        seen.add(lowered)
+        seen.add(key)
     if not deduped:
         return ""
     compact = " ".join(deduped)
@@ -250,7 +258,9 @@ def _normalize_display_summary_v2(text: str) -> str:
     lines: list[str] = []
     raw_lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
     for line in raw_lines:
-        lines.extend([chunk.strip() for chunk in _SENTENCE_END_PATTERN.split(line) if chunk.strip()])
+        split_chunks = re.split(r"\s*[|•]\s*", line)
+        for chunk in split_chunks:
+            lines.extend([seg.strip() for seg in _SENTENCE_END_PATTERN.split(chunk) if seg.strip()])
 
     deduped: list[str] = []
     seen: set[str] = set()
@@ -260,10 +270,11 @@ def _normalize_display_summary_v2(text: str) -> str:
             continue
         if any(pattern.match(lowered) for pattern in _NOISE_INLINE_PATTERNS):
             continue
-        if lowered in seen:
+        key = _dedupe_key(line)
+        if key in seen:
             continue
         deduped.append(line)
-        seen.add(lowered)
+        seen.add(key)
     if not deduped:
         return ""
     compact = " ".join(deduped)
@@ -298,6 +309,7 @@ class PublishResult:
     submission_id: str
     target_channel_id: int | None
     target_message_id: int | None
+    thread_id: int | None
     merged_into_submission_id: str | None
 
 
@@ -469,19 +481,23 @@ class CurationService:
                 continue
             if any(pattern.match(lowered) for pattern in _NOISE_INLINE_PATTERNS):
                 continue
-            if lowered in seen:
+            key = _dedupe_key(line)
+            if key in seen:
                 continue
-            compacted.append(line.strip())
-            seen.add(lowered)
+            compacted.append(line)
+            seen.add(key)
         return " ".join(compacted)
 
     def _isolate_signal_text(self, text: str) -> str:
         if not text:
             return ""
-        cleaned = text.replace("\r", " ").replace("\n", " ")
-        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        cleaned = text.replace("\r", " ")
+        lines = [line.strip() for line in cleaned.split("\n") if line.strip()]
+        cleaned = "\n".join(lines)
         cleaned = re.sub(r"\[/?(?:dot\.move|link)\]", "", cleaned, flags=re.IGNORECASE)
-        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        cleaned = re.sub(r"[ \t]+", " ", cleaned)
+        cleaned = re.sub(r"\s*\n\s*", "\n", cleaned)
+        cleaned = cleaned.strip()
         cleaned = self._cleanup_signal_text(cleaned)
         return cleaned
 
@@ -750,6 +766,7 @@ class CurationService:
         summary: str,
         urls: list[str],
         author_id: int,
+        author_name: str,
         source_message_link: str,
         mention_role: discord.Role | None,
         mention_role_name: str,
@@ -761,8 +778,6 @@ class CurationService:
             link_text = "없음"
         else:
             link_text = str(urls[0])
-            if len(urls) > 1:
-                link_text = f"{link_text} (총 {len(urls)}건)"
 
         mention = mention_role.mention if mention_role else (f"@{mention_role_name}" if mention_role_name else "없음")
         normalized_tags = [str(tag) for tag in tags[:12] if tag]
@@ -777,7 +792,7 @@ class CurationService:
             "",
             f"링크: {link_text}",
             "",
-            f"작성자: <@{author_id}>",
+            f"작성자: @{author_name.lstrip('@') if author_name else author_id}",
             f"원문: {source_message_link or '-'}",
             f"멘션: {mention}",
             "",
@@ -1257,6 +1272,7 @@ class CurationService:
         submission: dict[str, Any],
         duplicate_target: dict[str, Any],
         reviewer_id: int,
+        create_thread: bool = False,
     ) -> PublishResult:
         posts = self._latest_posts_by_submission()
         target_post = posts.get(str(duplicate_target.get("submission_id")))
@@ -1334,6 +1350,7 @@ class CurationService:
             submission_id=str(submission.get("submission_id")),
             target_channel_id=channel_id or None,
             target_message_id=message_id or None,
+            thread_id=thread_id,
             merged_into_submission_id=str(duplicate_target.get("submission_id")),
         )
 
@@ -1347,13 +1364,14 @@ class CurationService:
         override_channel_name: str | None = None,
         override_tags: list[str] | None = None,
         source_message: discord.Message | None = None,
+        create_discussion_thread: bool = False,
     ) -> PublishResult:
         submission = self.get_submission(submission_id)
         if not submission:
-            return PublishResult("missing", submission_id, None, None, None)
+            return PublishResult("missing", submission_id, None, None, None, None)
 
         if str(submission.get("status", "pending")).lower() not in {"pending"}:
-            return PublishResult("already_handled", submission_id, None, None, None)
+            return PublishResult("already_handled", submission_id, None, None, None, None)
 
         duplicates = self._candidate_duplicates(submission)
         if duplicates:
@@ -1362,6 +1380,7 @@ class CurationService:
                 submission=submission,
                 duplicate_target=duplicates[0],
                 reviewer_id=reviewer_id,
+                create_thread=create_discussion_thread,
             )
 
         curation_type = str(submission.get("classified_type", "idea")).lower()
@@ -1382,7 +1401,7 @@ class CurationService:
                     "reason": f"target_channel_missing:{target_name}",
                 },
             )
-            return PublishResult("target_channel_missing", submission_id, None, None, None)
+            return PublishResult("target_channel_missing", submission_id, None, None, None, None)
 
         mention_role_name = self._mention_role_name(curation_type)
         mention_role = self._find_role_by_name(guild, mention_role_name)
@@ -1405,6 +1424,7 @@ class CurationService:
             summary="\n".join(summary_lines),
             urls=urls,
             author_id=int(submission.get("author_id") or 0),
+            author_name=str(submission.get("author_name") or str(submission.get("author_id") or "")),
             source_message_link=str(submission.get("source_message_link") or ""),
             mention_role=mention_role,
             mention_role_name=mention_role_name,
@@ -1431,6 +1451,26 @@ class CurationService:
         )
 
         thread_id: int | None = None
+        if create_discussion_thread:
+            thread_name = truncate_text(f"{title} 토론", 72, suffix="")
+            try:
+                discussion_thread = await retry_discord_call(
+                    lambda: posted_message.create_thread(name=thread_name, auto_archive_duration=60 * 24)
+                )
+                thread_id = int(discussion_thread.id)
+            except Exception:
+                await self.storage.append_ops_event(
+                    "curation_thread_open_failed",
+                    {
+                        "guild_id": guild.id,
+                        "channel_id": target_channel.id,
+                        "user_id": reviewer_id,
+                        "command_name": "curation_publish",
+                        "submission_id": submission_id,
+                        "result": "discussion_thread_create_failed",
+                    },
+                    idempotency_key=f"curation_discussion_open_failed:{submission_id}:{posted_message.id}",
+                )
 
         post_payload = {
             "post_id": str(uuid.uuid4()),
@@ -1473,6 +1513,7 @@ class CurationService:
             submission_id=submission_id,
             target_channel_id=target_channel.id,
             target_message_id=posted_message.id,
+            thread_id=thread_id,
             merged_into_submission_id=None,
         )
 

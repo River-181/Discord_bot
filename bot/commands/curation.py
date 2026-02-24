@@ -91,11 +91,16 @@ def register(bot: "MangsangBot") -> None:
         )
 
     @app_commands.command(name="curation_publish", description="승인 대기 submission을 즉시 게시합니다. (운영자 전용)")
-    @app_commands.describe(submission_id="게시할 submission_id", target="대상 채널(선택)")
+    @app_commands.describe(
+        submission_id="게시할 submission_id",
+        target="대상 채널(선택)",
+        create_thread="게시 후 토론 스레드 생성",
+    )
     async def curation_publish(
         interaction: discord.Interaction,
         submission_id: str,
         target: discord.TextChannel | None = None,
+        create_thread: bool = False,
     ) -> None:
         if interaction.guild is None:
             await interaction.response.send_message("길드 채널에서만 사용할 수 있습니다.", ephemeral=True)
@@ -132,11 +137,13 @@ def register(bot: "MangsangBot") -> None:
             override_channel_name=target.name if target else str(submission.get("override_channel", "")).strip() or None,
             override_tags=list(submission.get("tags") or []),
             source_message=source_message,
+            create_discussion_thread=create_thread,
         )
 
         if result.status == "approved":
+            extra = f" / thread_id={result.thread_id}" if result.thread_id else ""
             await interaction.followup.send(
-                f"게시 완료: <#{result.target_channel_id}> / message_id={result.target_message_id}",
+                f"게시 완료: <#{result.target_channel_id}> / message_id={result.target_message_id}{extra}",
                 ephemeral=True,
             )
             return

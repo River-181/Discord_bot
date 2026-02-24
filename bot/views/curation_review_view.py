@@ -117,8 +117,7 @@ class CurationReviewView(discord.ui.View):
         if target_message is not None:
             await target_message.edit(embed=embed, view=self)
 
-    @discord.ui.button(label="승인", style=discord.ButtonStyle.success, row=0)
-    async def approve(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:  # noqa: ARG002
+    async def _publish(self, interaction: discord.Interaction, *, create_thread: bool) -> None:
         if not await self._check_permission(interaction):
             return
         assert interaction.guild is not None
@@ -145,6 +144,7 @@ class CurationReviewView(discord.ui.View):
             override_channel_name=str(submission.get("override_channel", "")).strip() if submission else None,
             override_tags=list(submission.get("tags") or []) if submission else None,
             source_message=source_message,
+            create_discussion_thread=create_thread,
         )
 
         updated = self.bot.curation_service.get_submission(self.submission_id)
@@ -152,8 +152,9 @@ class CurationReviewView(discord.ui.View):
             await self.refresh_message(interaction, updated)
 
         if result.status == "approved":
+            suffix = f" / thread_id={result.thread_id}" if result.thread_id else ""
             await interaction.followup.send(
-                f"승인 완료: <#{result.target_channel_id}> 에 게시했습니다. message_id={result.target_message_id}",
+                f"승인 완료: <#{result.target_channel_id}> 에 게시했습니다. message_id={result.target_message_id}{suffix}",
                 ephemeral=True,
             )
             return
@@ -165,6 +166,14 @@ class CurationReviewView(discord.ui.View):
             return
 
         await interaction.followup.send(f"승인 실패: {result.status}", ephemeral=True)
+
+    @discord.ui.button(label="승인", style=discord.ButtonStyle.success, row=0)
+    async def approve(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:  # noqa: ARG002
+        await self._publish(interaction, create_thread=False)
+
+    @discord.ui.button(label="승인 + 토론", style=discord.ButtonStyle.success, row=0)
+    async def approve_with_thread(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:  # noqa: ARG002
+        await self._publish(interaction, create_thread=True)
 
     @discord.ui.button(label="반려", style=discord.ButtonStyle.danger, row=0)
     async def reject(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:  # noqa: ARG002

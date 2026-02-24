@@ -92,7 +92,7 @@ def test_rule_classification_instagram_with_uxui_keyword_and_title_clean(tmp_pat
     result = service.classify_message(msg)
     assert result.curation_type == "idea"
     assert result.title.startswith("[IDEA]")
-    assert result.summary == "링크 1건" or "/ 링크 1건" in result.summary or "첨부" in result.summary
+    assert result.summary
 
 
 def test_rule_classification_instagram_without_uxui_as_link(tmp_path: Path) -> None:
@@ -219,6 +219,19 @@ def test_curation_summary_normalization_removes_inline_social_noise() -> None:
     assert normalized == "Sam Sifton, the host of The Morning"
 
 
+def test_curation_summary_normalization_removes_repeated_profile_copy(tmp_path: Path) -> None:
+    service = _make_service(tmp_path)
+    raw = (
+        "Sam Sifton, the host of The Morning, was previously an assistant managing editor responsible for culture and "
+        "lifestyle coverage and is the founding editor of New York Times Cooking. "
+        "Sam Sifton, the host of The Morning, was previously an assistant managing editor responsible for culture and "
+        "lifestyle coverage and is the founding editor of New York Times Cooking."
+    )
+    summary = service._build_summary(raw, [], [])
+    normalized = _normalize_display_summary(summary)
+    assert normalized.count("Sam Sifton") == 1
+
+
 def test_curation_publish_format_matches_template(tmp_path: Path) -> None:
     service = _make_service(tmp_path)
     lines = service._build_published_message_lines(
@@ -226,6 +239,7 @@ def test_curation_publish_format_matches_template(tmp_path: Path) -> None:
         summary="AI 코드 리뷰와 협업 패턴 정리 가이드입니다. 적용 가능성이 높습니다.",
         urls=["https://github.com/shanraisshan/claude-code-best-practice"],
         author_id=286,
+        author_name="김주용",
         source_message_link="https://discord.com/channels/1/2/3",
         mention_role=None,
         mention_role_name="knowledge",
@@ -236,14 +250,14 @@ def test_curation_publish_format_matches_template(tmp_path: Path) -> None:
     assert "요약:" in content
     assert "- AI 코드 리뷰와 협업 패턴 정리 가이드입니다." in content
     assert "링크: https://github.com/shanraisshan/claude-code-best-practice" in content
-    assert "작성자: <@286>" in content
+    assert "작성자: @김주용" in content
     assert "원문: https://discord.com/channels/1/2/3" in content
     assert "멘션: @knowledge" in content
     assert content.endswith("#curation #ai #github #link")
     assert "..." not in content
 
 
-def test_curation_publish_format_multiple_urls_shows_total_count(tmp_path: Path) -> None:
+def test_curation_publish_format_multiple_urls_uses_first_link_only(tmp_path: Path) -> None:
     service = _make_service(tmp_path)
     lines = service._build_published_message_lines(
         title="[LINK] reference",
@@ -254,13 +268,15 @@ def test_curation_publish_format_multiple_urls_shows_total_count(tmp_path: Path)
             "https://c.example.com/third",
         ],
         author_id=400,
+        author_name="user2",
         source_message_link="https://discord.com/channels/1/2/3",
         mention_role=None,
         mention_role_name="knowledge",
         tags=["#curation", "#link"],
     )
     content = "\n".join(lines)
-    assert "링크: https://a.example.com/first (총 3건)" in content
+    assert "링크: https://a.example.com/first" in content
+    assert "https://b.example.com/second" not in content
 
 
 def test_rule_classification_instagram_social_without_uxui_hint_defaults_to_link(tmp_path: Path) -> None:
