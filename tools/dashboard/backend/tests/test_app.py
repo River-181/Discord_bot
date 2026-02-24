@@ -127,3 +127,62 @@ def test_events_limit_and_metrics(tmp_path: Path) -> None:
         metric = client2.get("/api/metrics/quick", params={"hours": 24}).json()
     assert metric["warnings"] == 2
     assert metric["summaries"] == 0
+
+
+def test_curation_overview_counts_and_recent(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[4]
+    module = _bootstrap_module(tmp_path, root)
+    module.runtime_service = _FakeRuntime("running", True)
+
+    _write_jsonl(
+        tmp_path / module.files["curation_submissions"],
+        [
+            {
+                "submission_id": "s1",
+                "status": "pending",
+                "classified_type": "link",
+                "normalized_title": "[LINK] a",
+                "created_at": "2026-02-16T01:00:00Z",
+            },
+            {
+                "submission_id": "s1",
+                "status": "approved",
+                "classified_type": "link",
+                "normalized_title": "[LINK] a",
+                "created_at": "2026-02-16T02:00:00Z",
+            },
+            {
+                "submission_id": "s2",
+                "status": "rejected",
+                "classified_type": "idea",
+                "normalized_title": "[IDEA] b",
+                "created_at": "2026-02-16T03:00:00Z",
+            },
+        ],
+    )
+    _write_jsonl(
+        tmp_path / module.files["curation_posts"],
+        [
+            {
+                "post_id": "p1",
+                "submission_id": "s1",
+                "target_channel_id": 123,
+                "target_message_id": 456,
+                "published_at": "2026-02-16T02:30:00Z",
+            }
+        ],
+    )
+    _write_jsonl(tmp_path / module.files["decisions"], [])
+    _write_jsonl(tmp_path / module.files["summaries"], [])
+    _write_jsonl(tmp_path / module.files["warrooms"], [])
+    _write_jsonl(tmp_path / module.files["ops_events"], [])
+
+    with TestClient(module.app) as client:
+        response = client.get("/api/curation/overview", params={"limit": 10})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["counts"]["total"] == 2
+    assert data["counts"]["approved"] == 1
+    assert data["counts"]["rejected"] == 1
+    assert len(data["submissions"]) == 2
+    assert len(data["posts"]) == 1

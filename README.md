@@ -1,7 +1,8 @@
 # Mangsang Orbit Assistant
 
 Discord 운영 자동화를 위한 `discord.py` 기반 팀 비서 봇입니다.  
-회의 요약, 워룸 라이프사이클, 뉴스 레이다, DM 비서, 음악 재생 기능을 하나의 봇으로 통합합니다.
+회의 요약, 워룸 라이프사이클, 뉴스 레이다, DM 비서, 음악 재생, 큐레이션 자동등록 기능을 하나의 봇으로 통합합니다.
+개발/운영용 Agent Lab은 봇 기능이 아니라 로컬 대시보드 레이어로 분리되어 동작합니다.
 
 ## Overview
 - Runtime: Python 3.13 / `discord.py` 2.x
@@ -14,10 +15,60 @@ Discord 운영 자동화를 위한 `discord.py` 기반 팀 비서 봇입니다.
 - 회의 요약: `/meeting_summary`, `/decision_add`
 - 워룸 자동화: `/warroom_open`, `/warroom_close`, `/warroom_list`
 - 뉴스 레이다: `/news_run_now`, `/news_config`
+- 큐레이션 자동등록: `/curation_status`, `/curation_config`, `/curation_publish`, `/curation_reject`
 - 이벤트 리마인더: `/event_reminder_status`, `/event_reminder_config`
 - DM 하이브리드 비서: `도움말`, `상태`, `워룸`, `뉴스`, `요약 <텍스트>`
 - 음악 기능(MUSIC-1): `/music` 그룹 10종 서브명령
 - 운영 점검: `/bot_status`
+
+## Curation (CURATION-1)
+정책 고정값:
+- 입력 경로: DM + 인박스 채널
+- 게시 정책: approve 모드(운영자 승인 후 게시)
+- 분류 방식: 규칙 + Gemini 보조(신뢰도 낮을 때만)
+- 승인 권한: `Manage Guild` 또는 `Administrator`
+- 중복 처리: 기존 게시 스레드 병합
+
+기본 인프라(자동 생성):
+- 카테고리: `------🗂️-07-큐레이션-----`
+- 채널: `📥-큐레이션-인박스`, `🔗-큐레이션-링크`, `💡-큐레이션-아이디어`, `🎵-큐레이션-뮤직`, `📺-큐레이션-유튜브`, `🖼️-큐레이션-사진`
+- 역할: `@product`, `@growth`, `@knowledge`
+
+동작:
+- 유저가 DM 또는 인박스 채널에 링크/아이디어/음악/유튜브/사진 제보
+- 봇이 제목/요약/태그/타입을 정규화하여 승인 대기 카드 생성
+- 운영자가 카드 버튼(`승인/반려/채널변경/태그수정`)으로 처리
+- 승인 시 대상 채널 게시 + 작성자 멘션 + 원문 링크 + 역할 멘션
+
+## Agent Lab (개발/운영 대시보드 전용)
+목표:
+- Discord 봇 개발 워크플로우를 병렬 팀 형태로 추적
+- Streamlit `연구소 타이쿤` 탭에서 미션/진행률/병목을 시각화
+- 봇 슬래시 명령에 개발용 오케스트레이션을 섞지 않음
+- Agent 제어는 Discord 명령이 아니라 `CLI + 대시보드 입력 UI`에서만 수행
+
+역할:
+- `discord-dev` (development)
+- `bot-tester` (qa)
+- `ops-analyst` (ops)
+- `dashboard-dev` (dashboard)
+
+로컬 운영 명령:
+```bash
+cd /Users/river/tools/mangsang-orbit-assistant
+python3 tools/dashboard/scripts/agent_teamctl.py create --mission "이벤트 리마인더 개선" --tasks "payload 정리;예외 테스트;로그 분석;랩 UI 수정"
+python3 tools/dashboard/scripts/agent_teamctl.py update --agent discord-dev --status active --progress 45 --note "payload 1차 반영"
+python3 tools/dashboard/scripts/agent_teamctl.py status
+```
+
+대시보드 입력 경로:
+- `연구소 타이쿤` 탭 > `Agent Lab 제어면`
+- `Create`: mission/tasks 기반 팀 런 생성
+- `Update`: team run + agent 선택 후 status/progress 갱신
+
+데이터 계약:
+- 파일: `data/agent_sessions.jsonl`
+- 주요 필드: `session_id`, `assignment_id`, `team_run_id`, `mission`, `agent_name`, `task`, `status`, `progress`, `started_at`, `updated_at`, `completed_at`, `mode`, `assigned_by/updated_by`, `note`
 
 ## Music (MUSIC-1)
 정책 고정값:
@@ -115,6 +166,10 @@ cd /Users/river/tools/mangsang-orbit-assistant
 - `/warroom_list status:{active|archived|all}`
 - `/news_run_now hours:int`
 - `/news_config`
+- `/curation_status`
+- `/curation_config mode:{approve|auto} intake_channel:#channel`
+- `/curation_publish submission_id:str target:#channel(optional)`
+- `/curation_reject submission_id:str reason:str`
 - `/event_reminder_status`
 - `/event_reminder_config enabled:bool reminder_minutes:int send_dm:bool`
 - `/music join channel:#voice(optional)`
@@ -173,3 +228,4 @@ OPUS_LIBRARY_PATH=/opt/homebrew/opt/opus/lib/libopus.0.dylib
 
 ## Docs
 - `docs/command-migration-runbook-2026-02-18.md`
+- `docs/agent-team-playbook.md`

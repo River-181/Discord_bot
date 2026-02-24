@@ -73,6 +73,8 @@ gemini:
 
 news:
   enabled: true
+  auto_create_digest_channel: true
+  default_digest_channel_name: "🛰️-뉴스-레이다"
   window_hours: 12
   per_topic_limit: 8
   max_total_items: 40
@@ -118,3 +120,27 @@ music:
   notice_policy: "low_noise"
   ffmpeg_path: "/opt/homebrew/bin/ffmpeg"
   opus_library_path: "/opt/homebrew/opt/opus/lib/libopus.0.dylib"
+
+curation:
+  enabled: true
+  mode: "approve"
+  ingest:
+    dm_enabled: true
+    inbox_channel: "📥-큐레이션-인박스"
+  routing:
+    link: "🔗-큐레이션-링크"
+    idea: "💡-큐레이션-아이디어"
+    music: "🎵-큐레이션-뮤직"
+    youtube: "📺-큐레이션-유튜브"
+    photo: "🖼️-큐레이션-사진"
+  mentions:
+    link: "knowledge"
+    idea: "product"
+    music: "growth"
+    youtube: "knowledge"
+    photo: "growth"
+  approver_policy: "manage_guild"
+  dedupe_days: 30
+  attachment_reupload: true
+  fallback_link_only_when_upload_fails: true
+  category_name: "------🗂️-07-큐레이션-----"

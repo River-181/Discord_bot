@@ -214,6 +214,32 @@ class MusicService:
         except Exception:
             return False
 
+    @staticmethod
+    def _looks_like_direct_media_url(url: str) -> bool:
+        try:
+            parsed = urlparse(url)
+            path = (parsed.path or "").lower()
+            if path.endswith(
+                (
+                    ".mp3",
+                    ".m4a",
+                    ".aac",
+                    ".flac",
+                    ".ogg",
+                    ".opus",
+                    ".wav",
+                    ".m3u8",
+                    ".mpd",
+                )
+            ):
+                return True
+            query = (parsed.query or "").lower()
+            if "stream" in query or "audio" in query:
+                return True
+            return False
+        except Exception:
+            return False
+
     def _validate_source_policy(self, query_or_url: str, requester_id: int) -> tuple[str, str]:
         value = query_or_url.strip()
         if not value:
@@ -294,13 +320,26 @@ class MusicService:
     async def resolve_track(self, query_or_url: str, requester_id: int) -> Track:
         source_kind, value = self._validate_source_policy(query_or_url, requester_id)
         if source_kind == "direct_url":
-            return Track(
-                title=truncate_text(value, 120),
-                stream_url=value,
-                web_url=value,
-                duration_sec=None,
-                requester_id=requester_id,
-                source_type="direct",
+            # Try yt-dlp first for platform page links (Bugs/SoundCloud/etc.) and fall back only for raw stream URLs.
+            if self._ytdlp_available:
+                try:
+                    return await self._resolve_with_ytdlp(value, requester_id=requester_id, source_type="url")
+                except PolicyError:
+                    raise
+                except Exception as exc:
+                    LOGGER.info("direct url ytdlp resolve failed, fallback=%s url=%s", type(exc).__name__, value)
+            if self._looks_like_direct_media_url(value):
+                return Track(
+                    title=truncate_text(value, 120),
+                    stream_url=value,
+                    web_url=value,
+                    duration_sec=None,
+                    requester_id=requester_id,
+                    source_type="direct",
+                )
+            raise MusicError(
+                "이 링크는 직접 재생 가능한 오디오 스트림이 아니거나 플랫폼 보호(DRM)로 차단되었습니다. "
+                "지원 플랫폼 URL(yt-dlp 지원) 또는 직접 오디오 URL(mp3/m3u8 등)을 사용해 주세요."
             )
         if source_kind == "youtube_url":
             return await self._resolve_with_ytdlp(value, requester_id=requester_id, source_type="youtube")

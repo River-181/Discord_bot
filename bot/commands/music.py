@@ -211,29 +211,28 @@ def register(bot: "MangsangBot") -> None:
         interaction: discord.Interaction,
         command_name: str,
     ) -> tuple[discord.Guild, discord.VoiceChannel | discord.StageChannel] | None:
+        async def _reply_ephemeral(message: str) -> None:
+            if interaction.response.is_done():
+                await interaction.followup.send(message, ephemeral=True)
+            else:
+                await interaction.response.send_message(message, ephemeral=True)
+
         if interaction.guild is None:
-            if not interaction.response.is_done():
-                await interaction.response.send_message("길드 채널에서만 사용할 수 있습니다.", ephemeral=True)
+            await _reply_ephemeral("길드 채널에서만 사용할 수 있습니다.")
             await _log_command(bot, interaction, command_name, "not_guild")
             return None
         bot_channel = _get_bot_voice_channel(interaction.guild)
         if not bot_channel:
-            if not interaction.response.is_done():
-                await interaction.response.send_message("봇이 음성 채널에 연결되어 있지 않습니다.", ephemeral=True)
+            await _reply_ephemeral("봇이 음성 채널에 연결되어 있지 않습니다.")
             await _log_command(bot, interaction, command_name, "bot_not_connected")
             return None
         user_channel = _get_member_voice_channel(interaction)
         if not user_channel:
-            if not interaction.response.is_done():
-                await interaction.response.send_message("먼저 같은 음성 채널에 입장해 주세요.", ephemeral=True)
+            await _reply_ephemeral("먼저 같은 음성 채널에 입장해 주세요.")
             await _log_command(bot, interaction, command_name, "user_not_in_voice")
             return None
         if not _is_same_voice_channel(user_channel, bot_channel):
-            if not interaction.response.is_done():
-                await interaction.response.send_message(
-                    "제어 권한: 봇과 같은 음성 채널에 있는 사용자만 명령할 수 있습니다.",
-                    ephemeral=True,
-                )
+            await _reply_ephemeral("제어 권한: 봇과 같은 음성 채널에 있는 사용자만 명령할 수 있습니다.")
             await _log_command(bot, interaction, command_name, "not_same_voice")
             return None
         return interaction.guild, bot_channel

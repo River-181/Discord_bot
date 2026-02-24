@@ -19,6 +19,8 @@ def register(bot: "MangsangBot") -> None:
         summaries = len(bot.storage.read_jsonl("summaries"))
         news_items = len(bot.storage.read_jsonl("news_items"))
         news_digests = len(bot.storage.read_jsonl("news_digests"))
+        curation_submissions = len(bot.storage.read_jsonl("curation_submissions"))
+        curation_posts = len(bot.storage.read_jsonl("curation_posts"))
         dm_cfg = bot.settings.dm_assistant if hasattr(bot.settings, "dm_assistant") else {}
         dm_enabled = bool(dm_cfg.get("enabled", False))
         dm_mode = str(dm_cfg.get("mode", "hybrid"))
@@ -34,6 +36,11 @@ def register(bot: "MangsangBot") -> None:
         event_scan_cron = str(event_diag.get("scan_cron", "*/1 * * * *"))
         event_send_dm = bool(event_diag.get("send_dm", True))
         event_channel = str(event_diag.get("reminder_channel", ""))
+        curation_diag = bot.curation_service.diagnostics() if hasattr(bot, "curation_service") else None
+        curation_enabled = bool(curation_diag.enabled) if curation_diag else False
+        curation_mode = str(curation_diag.mode) if curation_diag else "approve"
+        curation_inbox = str(curation_diag.inbox_channel) if curation_diag else "-"
+        curation_counts = bot.curation_service.counts() if hasattr(bot, "curation_service") else {}
         process_mode = (
             "launchd"
             if os.getenv("XPC_SERVICE_NAME") == "com.mangsang.orbit.assistant"
@@ -72,6 +79,8 @@ def register(bot: "MangsangBot") -> None:
             f"- summaries(log lines): {summaries}",
             f"- news_items(log lines): {news_items}",
             f"- news_digests(log lines): {news_digests}",
+            f"- curation_submissions(log lines): {curation_submissions}",
+            f"- curation_posts(log lines): {curation_posts}",
             f"- dm_enabled: {dm_enabled}",
             f"- dm_mode: {dm_mode}",
             f"- dm_allowlist_count: {dm_allowlist_count}",
@@ -85,6 +94,10 @@ def register(bot: "MangsangBot") -> None:
             f"- event_reminder_scan_cron: {event_scan_cron}",
             f"- event_reminder_send_dm: {event_send_dm}",
             f"- event_reminder_channel: {event_channel}",
+            f"- curation_enabled: {curation_enabled}",
+            f"- curation_mode: {curation_mode}",
+            f"- curation_inbox_channel: {curation_inbox}",
+            f"- curation_pending(latest): {curation_counts.get('pending', 0)}",
             f"- scheduler_started: {bot.bot_scheduler.started}",
             f"- guild_command_count: {guild_command_count}",
             f"- has_meeting_summary: {has_meeting_summary}",

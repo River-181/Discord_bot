@@ -48,6 +48,7 @@ cd /Users/river/tools/mangsang-orbit-assistant
 - `GET /api/decisions?status=all|open|closed&limit=100`
 - `GET /api/events?event_type=all|scheduled_inactivity_scan|error|warning&limit=200`
 - `GET /api/metrics/quick?hours=24`
+- `GET /api/curation/overview?limit=30`
 - `POST /api/runtime/refresh`
 
 ### API 예시
@@ -58,6 +59,7 @@ curl 'http://127.0.0.1:8080/api/overview'
 curl 'http://127.0.0.1:8080/api/warrooms?status=active&limit=50'
 curl 'http://127.0.0.1:8080/api/events?event_type=warning&limit=50'
 curl 'http://127.0.0.1:8080/api/metrics/quick?hours=24'
+curl 'http://127.0.0.1:8080/api/curation/overview?limit=30'
 ```
 
 ## 사용자 점검 체크리스트
@@ -70,6 +72,8 @@ curl 'http://127.0.0.1:8080/api/metrics/quick?hours=24'
    - `/api/summaries`, `/api/decisions`
 4. 이벤트/에러 추적
    - `/api/events`, `/api/metrics/quick`
+5. 큐레이션 승인/게시 추적
+   - `/api/curation/overview`
 
 ## 고장 대응
 

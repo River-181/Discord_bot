@@ -11,6 +11,7 @@ from tools.dashboard.frontend.components.overview import render_overview
 from tools.dashboard.frontend.components.warrooms import render_warrooms
 from tools.dashboard.frontend.components.summaries_decisions import render_summaries_decisions
 from tools.dashboard.frontend.components.events import render_events
+from tools.dashboard.frontend.components.agent_lab import render_agent_lab
 
 
 st.set_page_config(page_title="망상궤도 운영 대시보드", layout="wide")
@@ -63,6 +64,13 @@ def main() -> None:
         unsafe_allow_html=True,
     )
 
+    # 탭 구성
+    tab_dashboard, tab_lab = st.tabs(["📊 운영 대시보드", "🏭 연구소 타이쿤"])
+
+    with tab_lab:
+        render_agent_lab()
+
+    # 사이드바 (탭 바깥에 그대로 유지)
     with st.sidebar:
         st.header("조회 필터")
 
@@ -91,64 +99,65 @@ def main() -> None:
         if st.button("지금 새로고침"):
             st.rerun()
 
-    try:
-        _fetch("/api/runtime/refresh", method="post")
-        health = _fetch("/api/health")
-    except Exception as exc:
-        st.error(str(exc))
-        st.stop()
+    with tab_dashboard:
+        try:
+            _fetch("/api/runtime/refresh", method="post")
+            health = _fetch("/api/health")
+        except Exception as exc:
+            st.error(str(exc))
+            st.stop()
 
-    st.sidebar.success(f"Health: {'OK' if health.get('ok') else 'WARN'}")
-    st.sidebar.metric("파일 결함 라인", health.get("corrupt_lines", 0))
-    if health.get("data_missing"):
-        st.sidebar.warning("데이터 파일이 누락되어 있습니다.")
-    if not health.get("jsonl_ok"):
-        st.sidebar.warning("JSONL 파싱/정합성 점검이 필요합니다.")
+        st.sidebar.success(f"Health: {'OK' if health.get('ok') else 'WARN'}")
+        st.sidebar.metric("파일 결함 라인", health.get("corrupt_lines", 0))
+        if health.get("data_missing"):
+            st.sidebar.warning("데이터 파일이 누락되어 있습니다.")
+        if not health.get("jsonl_ok"):
+            st.sidebar.warning("JSONL 파싱/정합성 점검이 필요합니다.")
 
-    runtime_state = health.get("runtime_state", {})
-    if runtime_state.get("state") not in {"running", "unknown"}:
-        st.sidebar.error("런타임 상태: 중단 또는 미연결")
-    else:
-        st.sidebar.success(f"런타임 상태: {runtime_state.get('state')}")
+        runtime_state = health.get("runtime_state", {})
+        if runtime_state.get("state") not in {"running", "unknown"}:
+            st.sidebar.error("런타임 상태: 중단 또는 미연결")
+        else:
+            st.sidebar.success(f"런타임 상태: {runtime_state.get('state')}")
 
-    overview = _fetch("/api/overview")
-    metrics = _fetch("/api/metrics/quick", params={"hours": metric_hours_map[metric_hours]})
-    warrooms = _fetch("/api/warrooms", params={"status": warroom_status, "limit": warroom_limit})
-    summaries = _fetch("/api/summaries", params={"scope": summary_scope, "limit": summary_limit})
-    decisions = _fetch(
-        "/api/decisions",
-        params={
-            "status": decision_status,
-            "limit": decision_limit,
-        },
-    )
-    events = _fetch(
-        "/api/events",
-        params={
-            "event_type": event_filter,
-            "limit": event_limit,
-        },
-    )
+        overview = _fetch("/api/overview")
+        metrics = _fetch("/api/metrics/quick", params={"hours": metric_hours_map[metric_hours]})
+        warrooms = _fetch("/api/warrooms", params={"status": warroom_status, "limit": warroom_limit})
+        summaries = _fetch("/api/summaries", params={"scope": summary_scope, "limit": summary_limit})
+        decisions = _fetch(
+            "/api/decisions",
+            params={
+                "status": decision_status,
+                "limit": decision_limit,
+            },
+        )
+        events = _fetch(
+            "/api/events",
+            params={
+                "event_type": event_filter,
+                "limit": event_limit,
+            },
+        )
 
-    target_guild_id = overview.get("target_guild_id")
+        target_guild_id = overview.get("target_guild_id")
 
-    render_overview(overview, target_guild_id=target_guild_id)
+        render_overview(overview, target_guild_id=target_guild_id)
 
-    st.markdown("---")
-    st.subheader("빠른 지표")
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("요약 건수", metrics.get("summaries", 0))
-    c2.metric("결정 건수", metrics.get("decisions", 0))
-    c3.metric("경고/전환 건수", metrics.get("warnings", 0))
-    c4.metric("Deep Work 개입", metrics.get("deep_work_interventions", 0))
+        st.markdown("---")
+        st.subheader("빠른 지표")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("요약 건수", metrics.get("summaries", 0))
+        c2.metric("결정 건수", metrics.get("decisions", 0))
+        c3.metric("경고/전환 건수", metrics.get("warnings", 0))
+        c4.metric("Deep Work 개입", metrics.get("deep_work_interventions", 0))
 
-    render_warrooms(warrooms)
-    st.markdown("---")
-    render_summaries_decisions(summaries, decisions, target_guild_id)
-    st.markdown("---")
-    render_events(events, event_filter)
+        render_warrooms(warrooms)
+        st.markdown("---")
+        render_summaries_decisions(summaries, decisions, target_guild_id)
+        st.markdown("---")
+        render_events(events, event_filter)
 
-    st.caption(f"업데이트: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+        st.caption(f"업데이트: {time.strftime('%Y-%m-%d %H:%M:%S')}")
 
 
 if __name__ == "__main__":

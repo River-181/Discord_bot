@@ -19,6 +19,8 @@ class DataFiles:
     news_items: str
     news_digests: str
     snapshots_dir: str
+    curation_submissions: str = "curation_submissions.jsonl"
+    curation_posts: str = "curation_posts.jsonl"
 
 
 class StorageService:
@@ -45,6 +47,8 @@ class StorageService:
             self.ops_events_path,
             self.news_items_path,
             self.news_digests_path,
+            self.curation_submissions_path,
+            self.curation_posts_path,
         ]
 
     def _load_idempotency_keys(self) -> None:
@@ -81,6 +85,14 @@ class StorageService:
     def snapshot_dir(self) -> Path:
         return self.base_dir / self.files.snapshots_dir
 
+    @property
+    def curation_submissions_path(self) -> Path:
+        return self.base_dir / self.files.curation_submissions
+
+    @property
+    def curation_posts_path(self) -> Path:
+        return self.base_dir / self.files.curation_posts
+
     def _timestamp(self) -> str:
         return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
 
@@ -109,6 +121,8 @@ class StorageService:
             "ops_events": self.ops_events_path,
             "news_items": self.news_items_path,
             "news_digests": self.news_digests_path,
+            "curation_submissions": self.curation_submissions_path,
+            "curation_posts": self.curation_posts_path,
         }
         if kind not in mapping:
             raise ValueError(f"Unsupported kind: {kind}")
@@ -145,6 +159,16 @@ class StorageService:
         if "run_at" not in payload:
             payload["run_at"] = self._timestamp()
         await self.append_jsonl("news_digests", payload)
+
+    async def append_curation_submission(self, payload: dict[str, Any]) -> None:
+        if "created_at" not in payload:
+            payload["created_at"] = self._timestamp()
+        await self.append_jsonl("curation_submissions", payload)
+
+    async def append_curation_post(self, payload: dict[str, Any]) -> None:
+        if "published_at" not in payload:
+            payload["published_at"] = self._timestamp()
+        await self.append_jsonl("curation_posts", payload)
 
     async def append_ops_event(
         self,

@@ -54,6 +54,10 @@ class Settings:
         return self.raw.get("event_reminder", {})
 
     @property
+    def curation(self) -> dict[str, Any]:
+        return self.raw.get("curation", {})
+
+    @property
     def gemini(self) -> dict[str, Any]:
         # Backward-compat for older settings key.
         return self.raw.get("gemini", self.raw.get("openai", {}))

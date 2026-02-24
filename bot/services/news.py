@@ -25,6 +25,7 @@ LOGGER = logging.getLogger("mangsang-orbit-assistant")
 FIELD_VALUE_LIMIT = 1024
 EMBED_FIELD_MAX = 25
 EMBED_TOTAL_SAFE_LIMIT = 5800
+DEFAULT_DIGEST_CHANNEL_NAME = "🛰️-뉴스-레이다"
 
 
 def _utc_now_iso() -> str:
@@ -401,6 +402,30 @@ class NewsService:
             return
         await retry_discord_call(lambda: log_channel.send(line))
 
+    async def _create_digest_channel(
+        self,
+        *,
+        guild: discord.Guild,
+        channel_name: str,
+    ) -> discord.TextChannel | None:
+        safe_name = (channel_name or "").strip()[:100]
+        if not safe_name:
+            return None
+        try:
+            channel = await retry_discord_call(
+                lambda: guild.create_text_channel(
+                    name=safe_name,
+                    topic="망상궤도 비서 뉴스 다이제스트 자동 채널",
+                    reason="뉴스 다이제스트 자동 채널 생성",
+                )
+            )
+            if isinstance(channel, discord.TextChannel):
+                return channel
+            return None
+        except Exception as exc:
+            LOGGER.warning("failed to auto-create digest channel '%s': %s", safe_name, exc)
+            return None
+
     async def _post_paginated_digest(
         self,
         *,
@@ -496,21 +521,47 @@ class NewsService:
         digest_channel_name = str(self.channels_config.get("news_digest", "")).strip()
         log_channel_name = str(self.channels_config.get("news_log", "")).strip()
         fallback_name = str(self.channels_config.get("assistant_output", "")).strip()
+        auto_create_channel = bool(self.news_config.get("auto_create_digest_channel", True))
+        default_digest_channel_name = str(
+            self.news_config.get("default_digest_channel_name", DEFAULT_DIGEST_CHANNEL_NAME)
+        ).strip() or DEFAULT_DIGEST_CHANNEL_NAME
 
-        digest_channel = find_text_channel_by_name(guild, digest_channel_name) if digest_channel_name else None
+        digest_channel: discord.TextChannel | None = None
+        resolved_digest_name = digest_channel_name or default_digest_channel_name
+        digest_channel = find_text_channel_by_name(guild, resolved_digest_name)
+
+        if not digest_channel and auto_create_channel:
+            digest_channel = await self._create_digest_channel(
+                guild=guild,
+                channel_name=resolved_digest_name,
+            )
+            if digest_channel:
+                await self.storage.append_ops_event(
+                    "news_digest_channel_autocreated",
+                    {
+                        "digest_id": digest_id,
+                        "guild_id": guild_id,
+                        "channel_id": digest_channel.id,
+                        "channel_name": digest_channel.name,
+                        "command_name": "news_digest_autocreate_channel",
+                    },
+                    idempotency_key=f"news_digest_channel_autocreated:{guild_id}:{digest_channel.id}",
+                )
+
         if not digest_channel and fallback_name:
             digest_channel = find_text_channel_by_name(guild, fallback_name)
-            await self.storage.append_ops_event(
-                "news_post_error",
-                {
-                    "digest_id": digest_id,
-                    "guild_id": guild_id,
-                    "error": "digest_channel_missing_fallback",
-                    "digest_channel_name": digest_channel_name,
-                    "fallback": fallback_name,
-                },
-                idempotency_key=f"news_channel_fallback:{guild_id}:{digest_id}",
-            )
+            if digest_channel:
+                await self.storage.append_ops_event(
+                    "news_post_error",
+                    {
+                        "digest_id": digest_id,
+                        "guild_id": guild_id,
+                        "error": "digest_channel_missing_fallback",
+                        "digest_channel_name": resolved_digest_name,
+                        "fallback": fallback_name,
+                    },
+                    idempotency_key=f"news_channel_fallback:{guild_id}:{digest_id}",
+                )
 
         log_channel = find_text_channel_by_name(guild, log_channel_name) if log_channel_name else None
         if not log_channel and fallback_name:

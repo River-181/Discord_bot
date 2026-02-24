@@ -21,7 +21,8 @@ from bot.services.storage import DataFiles, StorageService
 from bot.services.summarizer import SummarizerService
 from bot.services.news import NewsService
 from bot.services.music import MusicService
-from bot.services.dm_assistant import DMAssistantService
+from bot.services.dm_assistant import DMAssistantService, parse_dm_command
+from bot.services.curation import CurationService
 from bot.services.event_reminder import EventReminderService
 from bot.services.warroom import WarroomService
 from bot.triggers.deep_work import DeepWorkGuard
@@ -66,6 +67,10 @@ class MangsangBot(discord.Client):
             news_items=str(self.settings.data.get("news_items_file", "news_items.jsonl")),
             news_digests=str(self.settings.data.get("news_digests_file", "news_digests.jsonl")),
             snapshots_dir=str(self.settings.data.get("snapshots_dir", "snapshots")),
+            curation_submissions=str(
+                self.settings.data.get("curation_submissions_file", "curation_submissions.jsonl")
+            ),
+            curation_posts=str(self.settings.data.get("curation_posts_file", "curation_posts.jsonl")),
         )
         self.storage = StorageService(self.settings.data_dir, files)
 
@@ -90,6 +95,15 @@ class MangsangBot(discord.Client):
             storage=self.storage,
             loop_getter=lambda: self.loop,
             guild_getter=lambda guild_id: self.get_guild(guild_id),
+        )
+        self.curation_service = CurationService(
+            timezone=self.settings.timezone,
+            config=self.settings.curation,
+            channels_config=self.settings.channels,
+            storage=self.storage,
+            gemini_api_key=os.getenv("GEMINI_API_KEY"),
+            gemini_model=str(self.settings.gemini.get("model", "gemini-1.5-flash")),
+            gemini_timeout_seconds=int(self.settings.gemini.get("timeout_seconds", 25)),
         )
 
         self.warroom_service = WarroomService(
@@ -233,6 +247,13 @@ class MangsangBot(discord.Client):
     async def on_ready(self) -> None:
         logger.info("connected as %s (%s)", self.user, self.user.id if self.user else "-")
         logger.info("target_guild_id=%s", self.settings.target_guild_id)
+        if self.settings.target_guild_id and self.curation_service.enabled():
+            guild = self.get_guild(int(self.settings.target_guild_id))
+            if guild:
+                try:
+                    await self.curation_service.ensure_infrastructure(guild)
+                except Exception as infra_exc:
+                    logger.warning("curation infra ensure failed: %s", infra_exc)
 
         if not self.bot_scheduler.started:
             inactivity_cron = str(self.settings.scheduler.get("inactivity_check_cron", "0 * * * *"))
@@ -278,6 +299,35 @@ class MangsangBot(discord.Client):
             return
         if not message.guild:
             try:
+                dm_cmd = parse_dm_command(message.content or "")
+                if (
+                    self.curation_service.enabled()
+                    and self.curation_service.is_dm_ingest_enabled()
+                    and dm_cmd.intent == "unknown"
+                    and self.curation_service.is_curation_candidate(message)
+                ):
+                    submission_id = await self.curation_service.ingest_message(
+                        bot=self,
+                        message=message,
+                        source="dm",
+                    )
+                    if submission_id:
+                        await message.channel.send(
+                            "큐레이션 접수 완료. 운영자 승인 후 전용 채널에 게시됩니다.\n"
+                            f"- submission_id: `{submission_id}`"
+                        )
+                    else:
+                        await message.channel.send("큐레이션 접수 실패: 대상 길드 또는 인박스 채널을 찾지 못했습니다.")
+                    await self.storage.append_ops_event(
+                        "dm_assistant_invoked",
+                        {
+                            "user_id": message.author.id,
+                            "channel_id": message.channel.id,
+                            "command_name": "curation_ingest",
+                            "result": "ok",
+                        },
+                    )
+                    return
                 dm_result = await self.dm_assistant.handle_dm(self, message)
                 await self.storage.append_ops_event(
                     "dm_assistant_invoked",
@@ -300,6 +350,25 @@ class MangsangBot(discord.Client):
                 )
             return
         try:
+            if self.curation_service.should_ingest_channel_message(message):
+                submission_id = await self.curation_service.ingest_message(
+                    bot=self,
+                    message=message,
+                    source="channel",
+                    target_guild_id=message.guild.id,
+                )
+                await retry_discord_call(
+                    lambda: message.add_reaction("📥")
+                )
+                if submission_id:
+                    await retry_discord_call(
+                        lambda: message.reply(
+                            f"큐레이션 접수됨: `{submission_id}` (승인 대기)",
+                            mention_author=False,
+                            delete_after=15,
+                        )
+                    )
+                return
             await self.warroom_service.touch_activity_from_message(message)
             await self.thread_hygiene.handle_message(message)
             await self.deep_work_guard.handle_message(message)

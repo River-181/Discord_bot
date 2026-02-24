@@ -73,6 +73,8 @@ def register(bot: "MangsangBot") -> None:
         max_total = int(news_cfg.get("max_total_items", 40) or 40)
         window = int(news_cfg.get("window_hours", 12) or 12)
         dedupe = int(news_cfg.get("dedupe_days", 7) or 7)
+        auto_create = bool(news_cfg.get("auto_create_digest_channel", True))
+        default_channel_name = str(news_cfg.get("default_digest_channel_name", "🛰️-뉴스-레이다") or "🛰️-뉴스-레이다")
 
         digest_channel = bot.settings.channels.get("news_digest", "")
         log_channel = bot.settings.channels.get("news_log", "")
@@ -90,6 +92,8 @@ def register(bot: "MangsangBot") -> None:
             f"- per_topic_limit: `{per_topic}`",
             f"- max_total_items: `{max_total}`",
             f"- dedupe_days: `{dedupe}`",
+            f"- auto_create_digest_channel: `{auto_create}`",
+            f"- default_digest_channel_name: `{default_channel_name}`",
             f"- topics: `{len(topics)}`",
         ]
         await interaction.response.send_message("\n".join(lines), ephemeral=True)

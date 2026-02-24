@@ -96,6 +96,8 @@ files = {
     "warrooms": str(data_config.get("warrooms_file", "warrooms.jsonl")),
     "summaries": str(data_config.get("summaries_file", "summaries.jsonl")),
     "ops_events": str(data_config.get("ops_events_file", "ops_events.ndjson")),
+    "curation_submissions": str(data_config.get("curation_submissions_file", "curation_submissions.jsonl")),
+    "curation_posts": str(data_config.get("curation_posts_file", "curation_posts.jsonl")),
 }
 
 runtime_label = os.getenv("DASHBOARD_RUNTIME_LABEL", "com.mangsang.orbit.assistant")
@@ -395,6 +397,75 @@ def metrics_quick(hours: int = Query(24, ge=1, le=720)) -> dict[str, Any]:
         "decisions": len(decisions),
         "warnings": warnings,
         "deep_work_interventions": deep_work,
+    }
+
+
+@app.get("/api/curation/overview")
+def curation_overview(limit: int = Query(30, ge=1, le=300)) -> dict[str, Any]:
+    submissions_bundle = data_service.read("curation_submissions")
+    posts_bundle = data_service.read("curation_posts")
+
+    latest_by_submission: dict[str, dict[str, Any]] = {}
+    for row in submissions_bundle.rows:
+        raw_id = row.get("submission_id")
+        if not raw_id:
+            continue
+        latest_by_submission[str(raw_id)] = row
+
+    counts = {"pending": 0, "approved": 0, "rejected": 0, "merged": 0, "total": 0}
+    for row in latest_by_submission.values():
+        counts["total"] += 1
+        status = str(row.get("status", "pending")).lower()
+        if status in counts:
+            counts[status] += 1
+
+    recent_rows = sorted(
+        list(latest_by_submission.values()),
+        key=lambda x: data_service.parse_iso_datetime(x.get("created_at")) or datetime.min.replace(tzinfo=data_service.tz),
+        reverse=True,
+    )[:limit]
+
+    submissions = [
+        {
+            "submission_id": row.get("submission_id"),
+            "status": str(row.get("status", "pending")).lower(),
+            "classified_type": row.get("classified_type"),
+            "normalized_title": row.get("normalized_title"),
+            "tags": row.get("tags", []),
+            "author_id": row.get("author_id"),
+            "source": row.get("source"),
+            "source_channel_id": row.get("source_channel_id"),
+            "review_message_id": row.get("review_message_id"),
+            "created_at": _to_local_iso(data_service, row.get("created_at")),
+            "reviewed_at": _to_local_iso(data_service, row.get("reviewed_at")),
+        }
+        for row in recent_rows
+    ]
+
+    posts = sorted(
+        posts_bundle.rows,
+        key=lambda x: data_service.parse_iso_datetime(x.get("published_at")) or datetime.min.replace(tzinfo=data_service.tz),
+        reverse=True,
+    )[:limit]
+    post_rows = [
+        {
+            "post_id": row.get("post_id"),
+            "submission_id": row.get("submission_id"),
+            "target_channel_id": row.get("target_channel_id"),
+            "target_message_id": row.get("target_message_id"),
+            "thread_id": row.get("thread_id"),
+            "mention_role_id": row.get("mention_role_id"),
+            "published_at": _to_local_iso(data_service, row.get("published_at")),
+        }
+        for row in posts
+    ]
+
+    return {
+        "counts": counts,
+        "submissions": submissions,
+        "posts": post_rows,
+        "corrupt_lines": submissions_bundle.corrupt_lines + posts_bundle.corrupt_lines,
+        "data_missing": submissions_bundle.data_missing or posts_bundle.data_missing,
     }
 
 
