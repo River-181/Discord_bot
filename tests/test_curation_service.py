@@ -243,6 +243,40 @@ def test_curation_publish_format_matches_template(tmp_path: Path) -> None:
     assert "..." not in content
 
 
+def test_curation_publish_format_multiple_urls_shows_total_count(tmp_path: Path) -> None:
+    service = _make_service(tmp_path)
+    lines = service._build_published_message_lines(
+        title="[LINK] reference",
+        summary="다중 링크 제보입니다.",
+        urls=[
+            "https://a.example.com/first",
+            "https://b.example.com/second",
+            "https://c.example.com/third",
+        ],
+        author_id=400,
+        source_message_link="https://discord.com/channels/1/2/3",
+        mention_role=None,
+        mention_role_name="knowledge",
+        tags=["#curation", "#link"],
+    )
+    content = "\n".join(lines)
+    assert "링크: https://a.example.com/first (총 3건)" in content
+
+
+def test_rule_classification_instagram_social_without_uxui_hint_defaults_to_link(tmp_path: Path) -> None:
+    service = _make_service(tmp_path)
+    msg = _DummyMessage("https://instagram.com/p/abc/")
+    result = service.classify_message(msg)
+    assert result.curation_type == "link"
+
+
+def test_rule_classification_instagram_uxui_signal_as_idea(tmp_path: Path) -> None:
+    service = _make_service(tmp_path)
+    msg = _DummyMessage("UX/UI 분석 아이디어 공유: https://instagram.com/p/abc/")
+    result = service.classify_message(msg)
+    assert result.curation_type == "idea"
+
+
 def test_curation_build_summary_does_not_append_link_count_if_signal_exists(tmp_path: Path) -> None:
     service = _make_service(tmp_path)
     text = "아이디어 공유: 인터페이스 정리 링크를 참고하세요"
