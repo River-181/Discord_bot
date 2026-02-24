@@ -31,6 +31,10 @@ build/
 dist/
 *.egg-info/
 
+# .Agent runtime artifacts
+.Agent/snapshots/
+.Agent/incidents/
+/.Agent/.DS_Store
 # IDE/editor
 .idea/
 .vscode/

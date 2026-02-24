@@ -1,0 +1,21 @@
+{
+  "owner": {
+    "name": "River",
+    "discord_id": "286397219886858240",
+    "aliases": ["운영자", "owner"]
+  },
+  "roles": {
+    "manage_guild": [
+      {
+        "name": "River",
+        "discord_id": "286397219886858240",
+        "contact": "운영"
+      }
+    ],
+    "ops_analyst": [],
+    "dashboard": []
+  },
+  "escalation_path": [
+    "owner.discord_id"
+  ]
+}

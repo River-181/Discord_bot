@@ -1,0 +1,36 @@
+{
+  "workspace_name": "망상궤도 비서",
+  "owner": "River",
+  "target_repo": "River-181/Discord_bot",
+  "target_repo_path": "/Users/river/tools/mangsang-orbit-assistant",
+  "target_guild_id": 1401492009486651452,
+  "owner_alias": "@river",
+  "critical_paths": [
+    "bot/",
+    "config/settings.yaml",
+    "tools/dashboard/",
+    "data/",
+    "README.md",
+    "docs/"
+  ],
+  "runbooks": [
+    "runbooks/bot-lifecycle.md",
+    "runbooks/launchd-ops.md",
+    "runbooks/incident-response.md",
+    "runbooks/deploy-release.md",
+    "runbooks/feature-specific/meeting-summary.md",
+    "runbooks/feature-specific/warroom.md",
+    "runbooks/feature-specific/news-radar.md",
+    "runbooks/feature-specific/curation.md",
+    "runbooks/feature-specific/music.md",
+    "runbooks/feature-specific/event-reminder.md",
+    "runbooks/feature-specific/dashboard.md"
+  ],
+  "agent_roles": [
+    "discord-dev",
+    "bot-tester",
+    "ops-analyst",
+    "dashboard-dev"
+  ],
+  "last_updated_at": "2026-02-24T00:00:00+09:00"
+}
