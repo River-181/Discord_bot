@@ -687,7 +687,7 @@ class CurationService:
             chunks.append(truncate_text(sentences[0], 180, suffix=" ..."))
         if not chunks and urls:
             if len(urls) == 1:
-                chunks.append(f"링크 1건")
+                chunks.append("단일 링크 제보입니다.")
             else:
                 chunks.append(f"링크 {len(urls)}건")
         if attachments:
@@ -714,6 +714,51 @@ class CurationService:
     def _curation_intro(curation_type: str) -> str:
         return _TYPE_INTRO.get(curation_type, _TYPE_INTRO["idea"])
 
+    @staticmethod
+    def _has_meaningful_text(text: str) -> bool:
+        cleaned = _URL_SPLIT_PATTERN.sub("", text or "")
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        return len(cleaned) >= 20
+
+    @staticmethod
+    def _is_summary_weak(summary: str) -> bool:
+        normalized = _normalize_display_summary(summary)
+        if not normalized:
+            return True
+        if normalized == "내용 요약 없음":
+            return True
+        if normalized == "내용을 추출하지 못했습니다.":
+            return True
+        if re.match(r"^링크\s+\d+건$", normalized):
+            return True
+        if normalized.startswith("단일 링크 제보"):
+            return True
+        return len(normalized) < 12
+
+    def _build_fallback_summary(self, curation_type: str, title: str, urls: list[str]) -> str:
+        if urls:
+            preview = _short_url_display(urls[0])
+            if curation_type == "youtube":
+                return f"{preview} 링크를 확인해 영상 핵심 포인트를 바로 반영하세요."
+            if curation_type == "music":
+                return f"{preview} 음악/사운드 관련 제보입니다. 기획/운영 검토 대상으로 분류하세요."
+            if curation_type == "photo":
+                return f"{preview} 시각 자료 제보입니다. 톤/메시지 방향성을 검토하세요."
+            return f"{preview} 자료 제보입니다. 팀 적용 포인트가 있는지 확인해보세요."
+        return "링크의 핵심을 팀 기준으로 정리해 검토가 필요합니다."
+
+    def _build_hook(self, curation_type: str, title: str, summary: str, tags: list[str]) -> str:
+        summary_text = _normalize_display_summary(summary)
+        if summary_text and not self._is_summary_weak(summary_text) and summary_text != title:
+            first_line = [line.strip() for line in re.split(r"\n|\r", summary_text) if line.strip()]
+            if first_line:
+                return truncate_text(first_line[0], 140, suffix="")
+
+        type_tag = curation_type.upper()
+        tag_hint = " · ".join(t for t in (tags or [])[:2]) or "#curation"
+        compact_title = self._sanitize_title(title, fallback=f"[{type_tag}] 큐레이션 제보")
+        return f"{compact_title} 제보입니다. ({tag_hint})"
+
     def _one_sentence_teaser(self, curation_type: str, title: str, tags: list[str]) -> str:
         type_label = str(curation_type).lower()
         tag_hint = " · ".join(t for t in (tags or [])[:2]) or "#curation"
@@ -734,7 +779,7 @@ class CurationService:
     def _build_publish_bullets(summary: str, *, max_items: int = 3, max_len: int = 120) -> list[str]:
         normalized = _normalize_display_summary(summary)
         if not normalized:
-            return ["내용을 추출하지 못했습니다."]
+            return []
 
         candidates = [chunk.strip() for chunk in re.split(r"\s*/\s+", normalized) if chunk.strip()]
         if len(candidates) <= 1:
@@ -762,6 +807,8 @@ class CurationService:
     @staticmethod
     def _build_published_message_lines(
         *,
+        curation_type: str,
+        hook: str,
         title: str,
         summary: str,
         urls: list[str],
@@ -772,8 +819,10 @@ class CurationService:
         mention_role_name: str,
         tags: list[str],
     ) -> list[str]:
-        teaser = title or "큐레이션 제보"
+        teaser = hook or title or "큐레이션 제보"
         summary_bullets = CurationService._build_publish_bullets(summary)
+        if not summary_bullets:
+            summary_bullets = ["핵심 포인트를 빠르게 정리해 보겠습니다."]
         if not urls:
             link_text = "없음"
         else:
@@ -783,7 +832,6 @@ class CurationService:
         normalized_tags = [str(tag) for tag in tags[:12] if tag]
         if not normalized_tags:
             normalized_tags = ["#curation"]
-
         lines = [
             f"훅: {truncate_text(teaser, 120, suffix='')}",
             "",
@@ -873,8 +921,16 @@ class CurationService:
         attachments = self._collect_attachment_meta(message)
 
         curation_type, confidence, reason = self._rule_classify(text, urls, attachments)
+        title = self._build_title(curation_type, text, urls, attachments)
+        summary = self._build_summary(text, urls, attachments)
+        tags = self._simple_tags(text, curation_type, urls)
+        has_weak_summary = self._is_summary_weak(summary)
         ai_result: ClassificationResult | None = None
-        if confidence < 0.8:
+        should_run_ai = confidence < 0.8 or (self._client and has_weak_summary) or (
+            self._client and urls and not self._has_meaningful_text(text)
+        )
+
+        if should_run_ai:
             ai_result = self._ai_enrich(
                 text=text,
                 urls=urls,
@@ -897,8 +953,8 @@ class CurationService:
                 curation_type=ai_result.curation_type,
                 confidence=ai_result.confidence,
                 title=ai_result.title,
-                summary=ai_result.summary,
-                tags=ai_result.tags,
+                summary=ai_result.summary or summary,
+                tags=ai_result.tags if ai_result.tags else tags,
                 reason="ai_enrich",
             )
             return ai_result
@@ -906,9 +962,9 @@ class CurationService:
         return ClassificationResult(
             curation_type=curation_type,
             confidence=confidence,
-            title=self._build_title(curation_type, text, urls, attachments),
-            summary=self._build_summary(text, urls, attachments),
-            tags=self._simple_tags(text, curation_type, urls),
+            title=title,
+            summary=summary if not self._is_summary_weak(summary) else self._build_fallback_summary(curation_type, title, urls),
+            tags=tags,
             reason=reason,
         )
 
@@ -1413,13 +1469,14 @@ class CurationService:
         fallback_title = self._build_title(curation_type, text, urls, attachments)
         title = self._sanitize_title(str(submission.get("normalized_title") or ""), fallback=fallback_title)
         summary = _normalize_display_summary(str(submission.get("normalized_summary") or ""))
-        intro = self._curation_intro(curation_type)
-        summary_source = summary or intro
-        summary_lines = self._build_publish_bullets(summary_source)
-        if summary and summary == "내용을 추출하지 못했습니다.":
-            summary_lines = [f"- {intro}"]
+        if self._is_summary_weak(summary):
+            summary = self._build_fallback_summary(curation_type, title, urls)
+        summary_lines = self._build_publish_bullets(summary)
+        hook = self._build_hook(curation_type, title, "\n".join(summary_lines), tags)
 
         lines = self._build_published_message_lines(
+            curation_type=curation_type,
+            hook=hook,
             title=truncate_text(title, 72, suffix=""),
             summary="\n".join(summary_lines),
             urls=urls,

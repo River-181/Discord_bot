@@ -235,6 +235,8 @@ def test_curation_summary_normalization_removes_repeated_profile_copy(tmp_path: 
 def test_curation_publish_format_matches_template(tmp_path: Path) -> None:
     service = _make_service(tmp_path)
     lines = service._build_published_message_lines(
+        curation_type="link",
+        hook="GitHub 리포지토리 제보를 확인해 주세요.",
         title="[LINK] github.com/shanraisshan/claude-code-best-practice",
         summary="AI 코드 리뷰와 협업 패턴 정리 가이드입니다. 적용 가능성이 높습니다.",
         urls=["https://github.com/shanraisshan/claude-code-best-practice"],
@@ -246,7 +248,7 @@ def test_curation_publish_format_matches_template(tmp_path: Path) -> None:
         tags=["#curation", "#ai", "#github", "#link"],
     )
     content = "\n".join(lines)
-    assert content.startswith("훅: [LINK] github.com/shanraisshan/claude-code-best-practice")
+    assert content.startswith("훅: GitHub 리포지토리 제보를 확인해 주세요.")
     assert "요약:" in content
     assert "- AI 코드 리뷰와 협업 패턴 정리 가이드입니다." in content
     assert "링크: https://github.com/shanraisshan/claude-code-best-practice" in content
@@ -260,6 +262,8 @@ def test_curation_publish_format_matches_template(tmp_path: Path) -> None:
 def test_curation_publish_format_multiple_urls_uses_first_link_only(tmp_path: Path) -> None:
     service = _make_service(tmp_path)
     lines = service._build_published_message_lines(
+        curation_type="link",
+        hook="다중 링크 제보입니다.",
         title="[LINK] reference",
         summary="다중 링크 제보입니다.",
         urls=[
