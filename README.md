@@ -18,7 +18,7 @@ Discord 운영 자동화를 위한 `discord.py` 기반 팀 비서 봇입니다.
 - 큐레이션 자동등록: `/curation_status`, `/curation_config`, `/curation_publish`, `/curation_reject`
 - 이벤트 리마인더: `/event_reminder_status`, `/event_reminder_config`
 - DM 하이브리드 비서: `도움말`, `상태`, `워룸`, `뉴스`, `요약 <텍스트>`
-- 음악 기능(MUSIC-1): `/music` 그룹 10종 서브명령
+- 음악 기능(MUSIC-1): `/music` 그룹 11종 서브명령
 - 운영 점검: `/bot_status`
 
 ## Curation (CURATION-1)
@@ -83,6 +83,7 @@ python3 tools/dashboard/scripts/agent_teamctl.py status
 - `/music pause`
 - `/music resume`
 - `/music skip`
+- `/music panel`
 - `/music queue page:int`
 - `/music volume percent:int(optional)`
 - `/music now`
@@ -112,8 +113,8 @@ python3 tools/dashboard/scripts/agent_teamctl.py status
 - yt-dlp 공식 저장소: <https://github.com/yt-dlp/yt-dlp>
 
 ## News Radar Paging
-- 채널에는 `1페이지`만 게시
-- `2페이지 이상`은 자동 생성된 뉴스 스레드에 연속 게시
+- 기본 채널은 1페이지(토픽 필드 기준)로 요약하며,
+- 초과 항목은 동일 메시지 스레드에서 `2페이지`, `3페이지`로 연속 게시합니다.
 - 기본 선정량: `per_topic_limit=8`, `max_total_items=40`
 
 ## Event Reminder (EVENT-REMINDER-1)
@@ -144,6 +145,29 @@ TZ=Asia/Seoul
 DATA_DIR=./data
 FFMPEG_PATH=/opt/homebrew/bin/ffmpeg
 OPUS_LIBRARY_PATH=/opt/homebrew/opt/opus/lib/libopus.0.dylib
+```
+
+## Music 런타임 설정 (`music` 섹션)
+`config/settings.yaml`의 `music` 섹션 권장값:
+```yaml
+music:
+  enabled: true
+  source_policy: "hybrid"
+  allowlist_user_ids:
+    - 286397219886858240
+  default_voice_channel: "음악 라운지"
+  idle_disconnect_minutes: 10
+  max_queue_size: 30
+  max_track_minutes: 180
+  default_volume: 70
+  notice_policy: "low_noise"
+  ffmpeg_path: "/opt/homebrew/bin/ffmpeg"
+  opus_library_path: "/opt/homebrew/opt/opus/lib/libopus.0.dylib"
+  show_control_card: true
+  announce_now_playing: true
+  music_panel_command_enabled: true
+  default_control_channel: "auto"
+  panel_update_mode: "edit_last"
 ```
 
 ## Recommended Operations (launchd)
@@ -177,6 +201,7 @@ cd /Users/river/tools/mangsang-orbit-assistant
 - `/music pause`
 - `/music resume`
 - `/music skip`
+- `/music panel`
 - `/music queue page:int`
 - `/music volume percent:int(optional)`
 - `/music now`

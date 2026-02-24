@@ -28,6 +28,7 @@ from bot.services.warroom import WarroomService
 from bot.triggers.deep_work import DeepWorkGuard
 from bot.triggers.thread_hygiene import ThreadHygieneEngine
 from bot.utils import find_text_channel_by_name
+from bot.views.music_controls import MusicControlsView
 
 logging.basicConfig(
     level=logging.INFO,
@@ -96,6 +97,7 @@ class MangsangBot(discord.Client):
             loop_getter=lambda: self.loop,
             guild_getter=lambda guild_id: self.get_guild(guild_id),
         )
+        self.music_service.set_control_panel_presenter(self._render_music_control_panel)
         self.curation_service = CurationService(
             timezone=self.settings.timezone,
             config=self.settings.curation,
@@ -243,6 +245,74 @@ class MangsangBot(discord.Client):
             await retry_discord_call(
                 lambda chunk_text=chunk: ops_channel.send(f"🧠 망상궤도 비서 로그: {chunk_text}")
             )
+
+    async def _render_music_control_panel(self, guild: discord.Guild) -> None:
+        if not self.music_service.enabled:
+            return
+        state = self.music_service.get_state(guild.id)
+        if state is None:
+            return
+
+        channel = self.music_service.resolve_control_channel(guild, fallback_channel_id=state.text_channel_id)
+        if channel is None:
+            return
+
+        current_track = state.current
+        lines: list[str] = []
+        if current_track:
+            lines.append(f"🎵 지금 재생: **{current_track.title}**")
+            lines.append(f"요청자: <@{current_track.requester_id}>")
+            lines.append(f"출처: `{current_track.source_type}`")
+            if current_track.duration_sec:
+                lines.append(f"길이: `{current_track.duration_sec // 60}분 {current_track.duration_sec % 60:02d}초`")
+        else:
+            lines.append("🎵 현재 재생 중인 트랙이 없습니다.")
+
+        queue_items = list(state.queue)
+        if queue_items:
+            queue_preview = ", ".join(track.title for track in queue_items[:4])
+            if len(queue_items) > 4:
+                queue_preview = f"{queue_preview} +{len(queue_items) - 4}"
+            lines.append(f"다음 큐: {queue_preview}")
+        else:
+            lines.append("다음 큐: 비어 있음")
+
+        lines.append(f"음량: `{self.music_service.volume_percent(guild.id)}%`")
+        lines.append(f"상태: {'재생중' if (guild.voice_client and guild.voice_client.is_playing()) else '대기'}")
+
+        embed = discord.Embed(
+            title="🎵 음악 컨트롤",
+            description="\n".join(lines),
+            color=discord.Color.green(),
+        )
+        embed.set_footer(text=f"guild_id={guild.id}")
+
+        view = MusicControlsView(bot=self, guild_id=guild.id)
+
+        edit_last = str(self.music_service.panel_update_mode) == "edit_last"
+        should_edit = (
+            state.control_message_id is not None
+            and state.control_channel_id == channel.id
+        )
+
+        if edit_last and should_edit:
+            try:
+                control_message = await channel.fetch_message(int(state.control_message_id))
+                await control_message.edit(embed=embed, view=view)
+                return
+            except discord.NotFound:
+                self.music_service.clear_control_message(guild.id)
+            except Exception as exc:  # pragma: no cover
+                LOGGER = logging.getLogger("mangsang-orbit-assistant")
+                LOGGER.debug("music panel edit failed: %s", exc)
+                state.control_channel_id = channel.id
+
+        sent = await channel.send(embed=embed, view=view)
+        self.music_service.set_control_message(
+            guild.id,
+            channel_id=channel.id,
+            message_id=sent.id,
+        )
 
     async def on_ready(self) -> None:
         logger.info("connected as %s (%s)", self.user, self.user.id if self.user else "-")

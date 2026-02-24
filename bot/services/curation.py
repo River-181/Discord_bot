@@ -55,6 +55,39 @@ _SOCIAL_PATTERNS = [
     "dribbble.com",
     "behance.net",
 ]
+_SOCIAL_DOMAINS_TO_LINK = {
+    "instagram.com": "instagram",
+    "www.instagram.com": "instagram",
+    "x.com": "x",
+    "twitter.com": "x",
+    "threads.net": "threads",
+    "facebook.com": "facebook",
+    "tiktok.com": "tiktok",
+    "pinterest.": "pinterest",
+    "dribbble.com": "dribbble",
+    "behance.net": "behance",
+    "linktr.ee": "linktr",
+}
+_NOISE_LINE_PATTERNS = [
+    re.compile(r"^\s*likes?\b.*", re.IGNORECASE),
+    re.compile(r"^\s*댓글\b.*", re.IGNORECASE),
+    re.compile(r"^\s*저장\b.*", re.IGNORECASE),
+    re.compile(r"^\s*팔로워\b.*", re.IGNORECASE),
+    re.compile(r"^\s*공유\b.*", re.IGNORECASE),
+    re.compile(r"^\s*조회수?\b.*", re.IGNORECASE),
+]
+_NOISE_INLINE_PATTERNS = [
+    re.compile(r"^\s*\d+\s*개?의?\s*좋아요.*", re.IGNORECASE),
+    re.compile(r"^\s*likes\b.*", re.IGNORECASE),
+    re.compile(r"^\s*views?\b.*", re.IGNORECASE),
+]
+_TRACKING_PARAM_PATTERNS = [
+    re.compile(r"^utm_[^=]+"),
+    re.compile(r"^igsh$", re.IGNORECASE),
+]
+_URL_SPLIT_PATTERN = re.compile(r"(https?://[^\s<>()]+)")
+_SENTENCE_END_PATTERN = re.compile(r"(?<=[.!?])\s+")
+_TRACKING_PREFIXES = ("instagram.com", "x.com", "twitter.com", "fb.com", "shorturl.at")
 _UXUI_HINTS = {
     "ux",
     "ui",
@@ -125,6 +158,8 @@ _EXPLICIT_TYPE_TOKENS: dict[str, str] = {
     "유튜브:": "youtube",
     "사진:": "photo",
 }
+_NORMALIZATION_PROFILE = "compact_v2"
+_LINK_HINTS = {"링크", "자료", "유용", "참고", "유익", "공유"}
 
 
 @dataclass(frozen=True)
@@ -134,6 +169,7 @@ class ClassificationResult:
     title: str
     summary: str
     tags: list[str]
+    reason: str = "rules"
 
 
 @dataclass(frozen=True)
@@ -272,15 +308,71 @@ class CurationService:
     def _extract_urls(self, text: str) -> list[str]:
         if not text:
             return []
-        found = _URL_PATTERN.findall(text)
+        found = _URL_SPLIT_PATTERN.findall(text)
         normalized: list[str] = []
         seen: set[str] = set()
         for item in found:
             cleaned = item.strip().rstrip(".,)")
             if cleaned and cleaned not in seen:
-                normalized.append(cleaned)
-                seen.add(cleaned)
+                url = self._normalize_tracking_url(cleaned)
+                key = url.rstrip("/").lower()
+                if key not in seen:
+                    normalized.append(url)
+                    seen.add(key)
         return normalized
+
+    def _normalize_tracking_url(self, value: str) -> str:
+        try:
+            parsed = urlparse(value)
+            if not parsed.scheme or not parsed.netloc:
+                return value
+            query = []
+            raw_query = parsed.query.split("&") if parsed.query else []
+            for item in raw_query:
+                if "=" in item:
+                    key, val = item.split("=", 1)
+                else:
+                    key = item
+                    val = ""
+                if any(pattern.match(key.strip()) for pattern in _TRACKING_PARAM_PATTERNS):
+                    continue
+                if val:
+                    query.append(f"{key}={val}")
+                else:
+                    query.append(key)
+            normalized_query = "&".join(query)
+            parsed = parsed._replace(query=normalized_query)
+            return parsed.geturl()
+        except Exception:
+            return value
+
+    def _cleanup_signal_text(self, text: str) -> str:
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        if not lines:
+            return ""
+        compacted: list[str] = []
+        seen: set[str] = set()
+        for line in lines:
+            lowered = line.lower().strip()
+            if any(pattern.match(lowered) for pattern in _NOISE_LINE_PATTERNS):
+                continue
+            if any(pattern.match(lowered) for pattern in _NOISE_INLINE_PATTERNS):
+                continue
+            if lowered in seen:
+                continue
+            compacted.append(line.strip())
+            seen.add(lowered)
+        return " ".join(compacted)
+
+    def _isolate_signal_text(self, text: str) -> str:
+        if not text:
+            return ""
+        cleaned = text.replace("\r", " ").replace("\n", " ")
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        cleaned = re.sub(r"\[/?(?:dot\.move|link)\]", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        cleaned = self._cleanup_signal_text(cleaned)
+        return cleaned
 
     @staticmethod
     def _url_hash(url: str) -> str:
@@ -317,6 +409,24 @@ class CurationService:
         lower = text.lower().strip()
         return any(token in lower for token in hints)
 
+    @staticmethod
+    def _url_host(value: str) -> str:
+        try:
+            parsed = urlparse(value)
+            return (parsed.netloc or "").lower()
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _has_ig_uxui_signal(text: str, attachment_text: str = "") -> bool:
+        lowered = f"{text} {attachment_text}".lower()
+        return "instagram" in lowered and (
+            any(token in lowered for token in _IDEA_HINTS | _UXUI_HINTS)
+            or "ux" in lowered
+            or "ui" in lowered
+            or "디자인" in lowered
+        )
+
     def _explicit_type_from_text(self, text: str) -> str | None:
         lower = text.lower().strip()
         for token, mapped in _EXPLICIT_TYPE_TOKENS.items():
@@ -324,7 +434,12 @@ class CurationService:
                 return mapped
         return None
 
-    def _rule_classify(self, text: str, urls: list[str], attachments: list[dict[str, Any]]) -> tuple[str, float]:
+    def _rule_classify(
+        self,
+        text: str,
+        urls: list[str],
+        attachments: list[dict[str, Any]],
+    ) -> tuple[str, float, str]:
         has_uxui_hint = self._has_any_hint(text, _UXUI_HINTS)
         has_idea_hint = self._has_any_hint(text, _IDEA_HINTS)
         has_photo_hint = self._has_any_hint(text, _PHOTO_HINTS)
@@ -333,49 +448,58 @@ class CurationService:
         explicit_type = self._explicit_type_from_text(text)
 
         if explicit_type in _ALLOWED_TYPES:
-            return (explicit_type, 0.99)
+            return (explicit_type, 0.99, "explicit_token")
+
+        if not text and attachments:
+            image_count = len([x for x in attachments if bool(x.get("is_image"))])
+            if image_count:
+                return ("photo", 0.96, "image_attachment")
 
         if urls:
             if has_uxui_hint or has_idea_hint:
-                return ("idea", 0.96)
+                return ("idea", 0.96, "uxui_idea_text_with_url")
             # music.youtube.com 또는 유튜브 링크+음악 문맥은 music으로 라우팅.
             if any("music.youtube.com" in url.lower() for url in urls):
-                return ("music", 0.97)
+                return ("music", 0.97, "music_youtube_domain")
             if any(self._is_youtube_url(url) for url in urls):
                 if has_music_hint:
-                    return ("music", 0.94)
-                return ("youtube", 0.95)
+                    return ("music", 0.94, "youtube_url_music_hint")
+                if any(self._url_host(url).startswith("instagram.") for url in urls):
+                    return ("youtube", 0.8, "youtube_hint_on_instagram_link")
+                return ("youtube", 0.95, "youtube_url")
             if any(self._is_music_url(url) for url in urls):
-                return ("music", 0.9)
+                return ("music", 0.9, "music_platform_url")
             if any(self._is_image_url(url) for url in urls):
                 if has_uxui_hint or has_idea_hint:
-                    return ("idea", 0.9)
+                    return ("idea", 0.9, "image_url_uxui_idea")
                 if has_photo_hint:
-                    return ("photo", 0.96)
-                return ("photo", 0.85)
+                    return ("photo", 0.96, "image_url_photo_hint")
+                return ("photo", 0.85, "image_url_default")
             if any(self._is_social_url(url) for url in urls):
                 if has_photo_hint:
-                    return ("photo", 0.82)
-                return ("link", 0.93)
+                    return ("photo", 0.82, "social_photo_hint")
+                if self._has_ig_uxui_signal(text):
+                    return ("idea", 0.92, "instagram_social_uxui")
+                return ("link", 0.93, "social_default")
             if has_youtube_hint:
-                return ("youtube", 0.8)
+                return ("youtube", 0.8, "youtube_keyword")
             if has_music_hint:
-                return ("music", 0.8)
+                return ("music", 0.8, "music_keyword")
             # 일반 웹 링크는 link 기본값.
-            return ("link", 0.92)
+            return ("link", 0.92, "default_url")
 
         if attachments:
             image_count = len([x for x in attachments if bool(x.get("is_image"))])
             if image_count >= max(1, len(attachments) // 2):
                 if has_uxui_hint or has_idea_hint:
-                    return ("idea", 0.86)
-                return ("photo", 0.85)
+                    return ("idea", 0.86, "attachments_uxui_idea")
+                return ("photo", 0.85, "attachments_image")
 
         if has_music_hint:
-            return ("music", 0.72)
+            return ("music", 0.72, "music_keyword")
         if has_youtube_hint:
-            return ("youtube", 0.72)
-        return ("idea", 0.7)
+            return ("youtube", 0.72, "youtube_keyword")
+        return ("idea", 0.7, "default_text")
 
     def _simple_tags(self, text: str, curation_type: str, urls: list[str]) -> list[str]:
         tags = {"#curation", f"#{curation_type}"}
@@ -399,26 +523,51 @@ class CurationService:
                 tags.add(f"#{host.split('.')[0][:20]}")
         return sorted(tags)
 
-    def _build_title(self, curation_type: str, text: str, urls: list[str], attachments: list[dict[str, Any]]) -> str:
+    def _build_title(
+        self,
+        curation_type: str,
+        text: str,
+        urls: list[str],
+        attachments: list[dict[str, Any]],
+    ) -> str:
         type_upper = curation_type.upper()
-        base = text.strip()
+        compact_text = self._cleanup_signal_text(text)
+        base = compact_text.strip()
         if not base and urls:
-            base = urls[0]
+            url = urls[0]
+            host = _URL_PATTERN.match(url)
+            if host:
+                base = host.group(0).replace("https://", "").replace("http://", "")
+            else:
+                base = url
         if not base and attachments:
             base = str(attachments[0].get("filename") or "첨부 파일")
         if not base:
             base = "새 제보"
         base = base.replace("\n", " ").strip()
-        return f"[{type_upper}] {truncate_text(base, 72, suffix='') }".strip()
+        return f"[{type_upper}] {truncate_text(base, 72, suffix='')}".strip()
 
     def _build_summary(self, text: str, urls: list[str], attachments: list[dict[str, Any]]) -> str:
         chunks: list[str] = []
-        if text:
-            chunks.append(truncate_text(text.replace("\n", " "), 280, suffix=" ..."))
+        signal = self._cleanup_signal_text(text)
+        # URLs are summarized separately as 링크 n건; 본문 요약에 원문 링크가 남지 않게 제거한다.
+        signal = _URL_SPLIT_PATTERN.sub("", signal)
+        if signal:
+            sentences = [part for part in _SENTENCE_END_PATTERN.split(signal) if part.strip()]
+            if not sentences:
+                sentences = [signal]
+            chunks.append(truncate_text(sentences[0], 180, suffix=" ..."))
         if urls:
-            chunks.append(f"링크 {len(urls)}건")
+            if len(urls) == 1:
+                chunks.append(f"링크 1건")
+            else:
+                chunks.append(f"링크 {len(urls)}건")
         if attachments:
-            chunks.append(f"첨부 {len(attachments)}건")
+            if len(attachments) == 1:
+                name = str(attachments[0].get("filename") or "첨부 파일")
+                chunks.append(f"첨부: {truncate_text(name, 32, suffix='...')}")
+            else:
+                chunks.append(f"첨부 {len(attachments)}건")
         return " / ".join(chunks) if chunks else "내용 요약 없음"
 
     def _ai_enrich(
@@ -475,16 +624,18 @@ class CurationService:
                 title=title,
                 summary=summary,
                 tags=tags,
+                reason="ai_enrich",
             )
         except Exception:
             return None
 
     def classify_message(self, message: discord.Message) -> ClassificationResult:
-        text = (message.content or "").strip()
-        urls = self._extract_urls(text)
+        raw_text = (message.content or "").strip()
+        text = self._isolate_signal_text(raw_text)
+        urls = self._extract_urls(raw_text)
         attachments = self._collect_attachment_meta(message)
 
-        curation_type, confidence = self._rule_classify(text, urls, attachments)
+        curation_type, confidence, reason = self._rule_classify(text, urls, attachments)
         ai_result: ClassificationResult | None = None
         if confidence < 0.8:
             ai_result = self._ai_enrich(
@@ -505,6 +656,14 @@ class CurationService:
                 ai_result = None
 
         if ai_result:
+            ai_result = ClassificationResult(
+                curation_type=ai_result.curation_type,
+                confidence=ai_result.confidence,
+                title=ai_result.title,
+                summary=ai_result.summary,
+                tags=ai_result.tags,
+                reason="ai_enrich",
+            )
             return ai_result
 
         return ClassificationResult(
@@ -513,6 +672,7 @@ class CurationService:
             title=self._build_title(curation_type, text, urls, attachments),
             summary=self._build_summary(text, urls, attachments),
             tags=self._simple_tags(text, curation_type, urls),
+            reason=reason,
         )
 
     def _collect_attachment_meta(self, message: discord.Message) -> list[dict[str, Any]]:
@@ -622,6 +782,8 @@ class CurationService:
             "attachments": attachments,
             "classified_type": classification.curation_type,
             "classification_confidence": classification.confidence,
+            "classification_reason": classification.reason,
+            "normalization_profile": _NORMALIZATION_PROFILE,
             "tags": classification.tags,
             "normalized_title": classification.title,
             "normalized_summary": classification.summary,
@@ -710,6 +872,8 @@ class CurationService:
                 "submission_id": submission_id,
                 "source": source,
                 "classified_type": classification.curation_type,
+                "classification_reason": classification.reason,
+                "normalization_profile": _NORMALIZATION_PROFILE,
                 "mode": cfg["mode"],
             },
             idempotency_key=f"curation_ingested:{submission_id}",
@@ -725,6 +889,8 @@ class CurationService:
                 "classified_type": classification.curation_type,
                 "confidence": classification.confidence,
                 "tags": classification.tags,
+                "classification_reason": classification.reason,
+                "normalization_profile": _NORMALIZATION_PROFILE,
             },
             idempotency_key=f"curation_classified:{submission_id}",
         )
@@ -747,6 +913,8 @@ class CurationService:
         urls = submission.get("urls") if isinstance(submission.get("urls"), list) else []
         attachments = submission.get("attachments") if isinstance(submission.get("attachments"), list) else []
         source_message_link = str(submission.get("source_message_link", "")).strip()
+        reason = str(submission.get("classification_reason", "rules"))
+        profile = str(submission.get("normalization_profile", _NORMALIZATION_PROFILE))
 
         embed = discord.Embed(
             title="🗂️ 큐레이션 승인 대기",
@@ -754,6 +922,8 @@ class CurationService:
             color=discord.Colour.orange(),
         )
         embed.add_field(name="분류", value=curation_type, inline=True)
+        embed.add_field(name="분류 근거", value=truncate_text(reason, 256), inline=True)
+        embed.add_field(name="정규화", value=truncate_text(profile, 256), inline=True)
         embed.add_field(name="상태", value=str(submission.get("status", "pending")), inline=True)
         embed.add_field(name="작성자", value=f"<@{submission.get('author_id')}>", inline=True)
         if summary:

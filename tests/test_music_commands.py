@@ -37,6 +37,7 @@ def test_register_music_commands_count() -> None:
         "skip",
         "queue",
         "volume",
+        "panel",
         "now",
         "stop",
         "leave",

@@ -86,6 +86,22 @@ def test_rule_classification_uxui_link_as_idea(tmp_path: Path) -> None:
     assert "#uxui" in result.tags
 
 
+def test_rule_classification_instagram_with_uxui_keyword_and_title_clean(tmp_path: Path) -> None:
+    service = _make_service(tmp_path)
+    msg = _DummyMessage("[dot.move] UX/UI 링크 정리: https://www.instagram.com/p/DVGq8eSAQUR/?utm_source=ig_web_copy_link")
+    result = service.classify_message(msg)
+    assert result.curation_type == "idea"
+    assert result.title.startswith("[IDEA]")
+    assert result.summary == "링크 1건" or "/ 링크 1건" in result.summary or "첨부" in result.summary
+
+
+def test_rule_classification_instagram_without_uxui_as_link(tmp_path: Path) -> None:
+    service = _make_service(tmp_path)
+    msg = _DummyMessage("사진 올려봄 https://www.instagram.com/p/abc/")
+    result = service.classify_message(msg)
+    assert result.curation_type in {"link", "photo"}
+
+
 def test_rule_classification_music_platform(tmp_path: Path) -> None:
     service = _make_service(tmp_path)
     msg = _DummyMessage("https://open.spotify.com/track/xyz")
@@ -136,6 +152,33 @@ def test_rule_classification_image_attachment_with_idea_context(tmp_path: Path) 
     )
     result = service.classify_message(msg)
     assert result.curation_type == "idea"
+
+
+def test_signal_noise_isolation_removes_repeated_lines_and_social_noise(tmp_path: Path) -> None:
+    service = _make_service(tmp_path)
+    msg = _DummyMessage(
+        "사진 2건 전달\n"
+        "좋아요 3\n"
+        "좋아요 3\n"
+        "https://www.instagram.com/p/abc/?utm_source=ig_web_copy_link&igsh=NTc4MTIwNjQ2YQ== "
+        "https://www.instagram.com/p/abc/?utm_source=ig_web_copy_link&igsh=NTc4MTIwNjQ2YQ== "
+    )
+    result = service.classify_message(msg)
+    assert len(result.title) > 0
+    # 링크 트래킹 파라미터 제거 후 중복도 제거되어야 함
+    assert "utm_source" not in result.summary
+    assert result.title.count("instagram") > 0
+
+
+def test_extract_urls_deduplicates_and_normalizes_tracking(tmp_path: Path) -> None:
+    service = _make_service(tmp_path)
+    text = (
+        "https://www.instagram.com/p/DVGq8eSAQUR/?utm_source=ig_web_copy_link&igsh=NTc4MTIwNjQ2YQ== "
+        "https://www.instagram.com/p/DVGq8eSAQUR/?utm_source=another&igsh=abc"
+    )
+    urls = service._extract_urls(text)
+    assert len(urls) == 1
+    assert "utm_source" not in urls[0]
 
 
 def test_should_detect_candidate(tmp_path: Path) -> None:

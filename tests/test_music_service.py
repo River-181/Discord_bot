@@ -172,9 +172,11 @@ def test_should_announce_now_playing_policy(tmp_path) -> None:
     s1 = _make_service(tmp_path, config={"enabled": True, "notice_policy": "low_noise"})
     s2 = _make_service(tmp_path, config={"enabled": True, "notice_policy": "standard"})
     s3 = _make_service(tmp_path, config={"enabled": True, "notice_policy": "silent"})
+    s4 = _make_service(tmp_path, config={"enabled": True, "announce_now_playing": False})
     assert s1._should_announce_now_playing() is True
     assert s2._should_announce_now_playing() is True
     assert s3._should_announce_now_playing() is False
+    assert s4._should_announce_now_playing() is False
 
 
 def test_volume_percent_default_and_set(tmp_path) -> None:

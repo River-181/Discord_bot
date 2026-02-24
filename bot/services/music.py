@@ -8,7 +8,7 @@ import re
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
@@ -16,7 +16,7 @@ import discord
 
 from bot.services.retry import retry_discord_call
 from bot.services.storage import StorageService
-from bot.utils import truncate_text
+from bot.utils import find_text_channel_by_name, truncate_text
 
 LOGGER = logging.getLogger("mangsang-orbit-assistant")
 
@@ -56,6 +56,11 @@ class GuildMusicState:
     last_activity_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     volume: float = 0.7
     text_channel_id: int | None = None
+    control_message_id: int | None = None
+    control_channel_id: int | None = None
+
+
+ControlPresenter = Callable[[discord.Guild], Awaitable[None]]
 
 
 @dataclass(frozen=True)
@@ -103,14 +108,92 @@ class MusicService:
         self.ffmpeg_path = os.getenv("FFMPEG_PATH") or str(cfg.get("ffmpeg_path", "ffmpeg"))
         self.opus_library_path = os.getenv("OPUS_LIBRARY_PATH") or str(cfg.get("opus_library_path", "")).strip()
 
+        self.show_control_card = bool(cfg.get("show_control_card", True))
+        self.default_control_channel = str(cfg.get("default_control_channel", "auto")).strip() or "auto"
+        self.announce_now_playing = bool(cfg.get("announce_now_playing", True))
+        self.panel_update_mode = str(cfg.get("panel_update_mode", "edit_last")).strip().lower() or "edit_last"
+        self.music_panel_command_enabled = bool(cfg.get("music_panel_command_enabled", True))
+
         self._states: dict[int, GuildMusicState] = {}
         self._locks: dict[int, asyncio.Lock] = {}
         self._nacl_available = importlib.util.find_spec("nacl") is not None
         self._ytdlp_available = importlib.util.find_spec("yt_dlp") is not None
+        self._panel_presenter: ControlPresenter | None = None
         self._opus_attempted = False
         self._opus_loaded = discord.opus.is_loaded()
         if self._nacl_available and not self._opus_loaded:
             self._ensure_opus_loaded()
+
+    def set_control_panel_presenter(self, presenter: ControlPresenter | None) -> None:
+        self._panel_presenter = presenter
+
+    def _should_show_control_panel(self) -> bool:
+        return self.show_control_card
+
+    async def refresh_control_panel(self, guild: discord.Guild, *, reason: str = "refresh") -> None:
+        if not self._should_show_control_panel() or self._panel_presenter is None:
+            return
+        state = self._states.get(guild.id)
+        if not state:
+            return
+        try:
+            await self._panel_presenter(guild)
+            await self._log(
+                "music_now_playing_announced",
+                {
+                    "guild_id": guild.id,
+                    "channel_id": state.text_channel_id,
+                    "user_id": None,
+                    "command_name": "music_panel",
+                    "result": reason,
+                },
+            )
+        except Exception as exc:  # pragma: no cover
+            await self._log(
+                "music_error",
+                {
+                    "guild_id": guild.id,
+                    "channel_id": state.text_channel_id,
+                    "user_id": None,
+                    "command_name": "music_panel",
+                    "result": f"refresh_control_panel:{type(exc).__name__}",
+                },
+            )
+
+    def get_state(self, guild_id: int) -> GuildMusicState | None:
+        return self._states.get(guild_id)
+
+    def get_or_create_state(self, guild_id: int) -> GuildMusicState:
+        return self._state(guild_id)
+
+    def set_control_message(self, guild_id: int, *, channel_id: int | None, message_id: int | None) -> None:
+        state = self._state(guild_id)
+        if channel_id is not None:
+            state.control_channel_id = channel_id
+        state.control_message_id = message_id
+
+    def clear_control_message(self, guild_id: int) -> None:
+        state = self._state(guild_id)
+        state.control_channel_id = None
+        state.control_message_id = None
+
+    def resolve_control_channel(self, guild: discord.Guild, *, fallback_channel_id: int | None = None) -> discord.TextChannel | None:
+        if self.default_control_channel not in {"", "auto"}:
+            channel = find_text_channel_by_name(guild, self.default_control_channel)
+            if channel is not None:
+                return channel
+
+        if fallback_channel_id:
+            candidate = guild.get_channel(fallback_channel_id)
+            if isinstance(candidate, discord.TextChannel):
+                return candidate
+
+        if state := self._states.get(guild.id):
+            text_channel = guild.get_channel(state.text_channel_id or 0)
+            if isinstance(text_channel, discord.TextChannel):
+                return text_channel
+
+        return None
 
     def diagnostics(self) -> dict[str, Any]:
         return {
@@ -121,7 +204,13 @@ class MusicService:
             "nacl_available": self._nacl_available,
             "opus_loaded": self._opus_loaded,
             "ytdlp_available": self._ytdlp_available,
-            "active_sessions": len(self._states),
+            "active_sessions": sum(
+                1
+                for guild_id in self._states.keys()
+                if ((guild := self.guild_getter(guild_id)) is not None)
+                and (voice_client := getattr(guild, "voice_client", None))
+                and voice_client.is_connected()
+            ),
         }
 
     def active_sessions(self) -> int:
@@ -389,20 +478,30 @@ class MusicService:
             state.voice_channel_id = channel.id
             state.text_channel_id = text_channel_id
             state.last_activity_at = datetime.now(UTC)
+            await self.refresh_control_panel(guild, reason="join")
             return voice_client
 
     async def leave(self, *, guild: discord.Guild, reason: str = "leave_command") -> bool:
         lock = self._lock(guild.id)
         async with lock:
+            state = self._state(guild.id)
             voice_client = guild.voice_client
             if not voice_client or not voice_client.is_connected():
-                self._states.pop(guild.id, None)
+                state.current = None
+                state.queue.clear()
+                state.voice_channel_id = None
+                state.last_activity_at = datetime.now(UTC)
+                await self.refresh_control_panel(guild, reason="already_left")
                 return False
             try:
                 await voice_client.disconnect(force=False)
             except Exception as exc:
                 raise MusicError(f"음성 채널 종료에 실패했습니다: {type(exc).__name__}") from exc
-            self._states.pop(guild.id, None)
+            state.current = None
+            state.queue.clear()
+            state.voice_channel_id = None
+            state.last_activity_at = datetime.now(UTC)
+            await self.refresh_control_panel(guild, reason=reason)
             await self._log(
                 "music_track_finished",
                 {
@@ -425,7 +524,7 @@ class MusicService:
         return discord.PCMVolumeTransformer(source, volume=volume)
 
     def _should_announce_now_playing(self) -> bool:
-        return self.notice_policy in {"low_noise", "standard"}
+        return self.announce_now_playing and self.notice_policy in {"low_noise", "standard"}
 
     def _resolve_announce_channel(self, guild: discord.Guild, text_channel_id: int | None):
         if not text_channel_id:
@@ -476,11 +575,13 @@ class MusicService:
         voice_client = guild.voice_client
         if not voice_client or not voice_client.is_connected():
             state.current = None
+            await self.refresh_control_panel(guild, reason="connection_lost")
             return False
         if voice_client.is_playing() or voice_client.is_paused():
             return False
         if not state.queue:
             state.current = None
+            await self.refresh_control_panel(guild, reason="queue_empty")
             return False
 
         next_track = state.queue.popleft()
@@ -535,6 +636,7 @@ class MusicService:
             },
         )
         await self._announce_now_playing(guild, state, next_track)
+        await self.refresh_control_panel(guild, reason="track_started")
         return True
 
     def volume_percent(self, guild_id: int) -> int:
@@ -572,6 +674,7 @@ class MusicService:
                 "applied_now": applied_now,
             },
         )
+        await self.refresh_control_panel(guild, reason="volume_changed")
         return applied_percent, applied_now
 
     async def _on_track_end(self, guild_id: int, err: Exception | None) -> None:
@@ -608,6 +711,7 @@ class MusicService:
             lock = self._lock(guild.id)
             async with lock:
                 await self._start_next_locked(guild)
+            await self.refresh_control_panel(guild, reason="track_end")
 
     async def enqueue_and_maybe_play(
         self,
@@ -637,15 +741,19 @@ class MusicService:
             state.queue.append(track)
             state.text_channel_id = text_channel_id
             state.last_activity_at = datetime.now(UTC)
+            queue_after_enqueue = len(state.queue)
             started_now = False
 
             voice_client = guild.voice_client
             if voice_client and voice_client.is_connected() and not voice_client.is_playing() and not voice_client.is_paused():
                 started_now = await self._start_next_locked(guild)
+                queue_after_enqueue = len(self._state(guild.id).queue)
+
+            await self.refresh_control_panel(guild, reason="enqueue")
 
         return EnqueueResult(
             track=track,
-            queue_length=len(self._state(guild.id).queue),
+            queue_length=queue_after_enqueue,
             started_now=started_now,
         )
 
@@ -658,6 +766,7 @@ class MusicService:
         voice_client.pause()
         state = self._state(guild.id)
         state.last_activity_at = datetime.now(UTC)
+        await self.refresh_control_panel(guild, reason="pause")
         return True
 
     async def resume(self, *, guild: discord.Guild) -> bool:
@@ -669,6 +778,7 @@ class MusicService:
         voice_client.resume()
         state = self._state(guild.id)
         state.last_activity_at = datetime.now(UTC)
+        await self.refresh_control_panel(guild, reason="resume")
         return True
 
     async def skip(self, *, guild: discord.Guild) -> bool:
@@ -680,6 +790,7 @@ class MusicService:
         voice_client.stop()
         state = self._state(guild.id)
         state.last_activity_at = datetime.now(UTC)
+        await self.refresh_control_panel(guild, reason="skip")
         return True
 
     async def stop(self, *, guild: discord.Guild) -> bool:
@@ -694,7 +805,9 @@ class MusicService:
             state.last_activity_at = datetime.now(UTC)
             if voice_client.is_playing() or voice_client.is_paused():
                 voice_client.stop()
+                await self.refresh_control_panel(guild, reason="stop")
                 return True
+            await self.refresh_control_panel(guild, reason="stop_noop")
             return False
 
     def now(self, guild_id: int) -> Track | None:
@@ -777,6 +890,7 @@ class MusicService:
                     )
                     continue
                 self._states.pop(guild_id, None)
+                self.clear_control_message(guild_id)
                 await self._log(
                     "music_idle_disconnected",
                     {

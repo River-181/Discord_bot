@@ -49,6 +49,13 @@ def _is_same_voice_channel(
     return user_channel.id == bot_channel.id
 
 
+def _is_admin_or_manage(interaction: discord.Interaction) -> bool:
+    perms = getattr(interaction.user, "guild_permissions", None)
+    if not perms:
+        return False
+    return bool(getattr(perms, "manage_guild", False) or getattr(perms, "administrator", False))
+
+
 async def _log_command(
     bot: "MangsangBot",
     interaction: discord.Interaction,
@@ -316,6 +323,52 @@ def register(bot: "MangsangBot") -> None:
         except MusicError as exc:
             await interaction.followup.send(str(exc), ephemeral=True)
             await _log_command(bot, interaction, "music_leave", f"error:{type(exc).__name__}")
+
+    @music_group.command(name="panel", description="음악 컨트롤 패널을 공개 채널에 갱신합니다.")
+    async def music_panel(interaction: discord.Interaction) -> None:
+        if not bot.music_service.enabled:
+            await interaction.response.send_message("음악 기능이 비활성화되어 있습니다.", ephemeral=True)
+            await _log_command(bot, interaction, "music_panel", "disabled")
+            return
+        if interaction.guild is None:
+            await interaction.response.send_message("길드 채널에서만 사용할 수 있습니다.", ephemeral=True)
+            await _log_command(bot, interaction, "music_panel", "not_guild")
+            return
+        if not bot.music_service.music_panel_command_enabled:
+            await interaction.response.send_message("음악 패널 명령이 비활성화되어 있습니다.", ephemeral=True)
+            await _log_command(bot, interaction, "music_panel", "feature_disabled")
+            return
+
+        state = bot.music_service.get_state(interaction.guild.id)
+        if state is None:
+            await interaction.response.send_message("현재 운영 중인 음악 세션이 없습니다.", ephemeral=True)
+            await _log_command(bot, interaction, "music_panel", "no_state")
+            return
+
+        guild = interaction.guild
+        bot_channel = _get_bot_voice_channel(guild)
+        if bot_channel:
+            user_channel = _get_member_voice_channel(interaction)
+            if not _is_same_voice_channel(user_channel, bot_channel) and not _is_admin_or_manage(interaction):
+                await interaction.response.send_message(
+                    "패널 갱신은 봇과 같은 음성 채널 또는 운영 권한이 필요합니다.",
+                    ephemeral=True,
+                )
+                await _log_command(bot, interaction, "music_panel", "not_same_channel")
+                return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            await bot.music_service.refresh_control_panel(guild, reason="command_panel")
+            await interaction.followup.send(
+                "음악 컨트롤 패널을 갱신했습니다. (공개 채널 확인)",
+                ephemeral=True,
+            )
+            await _log_command(bot, interaction, "music_panel", "ok")
+        except Exception as exc:
+            LOGGER.exception("music_panel failed: %s", exc)
+            await interaction.followup.send(f"패널 갱신 실패: {type(exc).__name__}", ephemeral=True)
+            await _log_command(bot, interaction, "music_panel", f"error:{type(exc).__name__}")
 
     @music_group.command(name="now", description="현재 재생 중인 트랙을 표시합니다.")
     async def music_now(interaction: discord.Interaction) -> None:

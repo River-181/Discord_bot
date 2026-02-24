@@ -120,6 +120,11 @@ music:
   notice_policy: "low_noise"
   ffmpeg_path: "/opt/homebrew/bin/ffmpeg"
   opus_library_path: "/opt/homebrew/opt/opus/lib/libopus.0.dylib"
+  show_control_card: true
+  announce_now_playing: true
+  music_panel_command_enabled: true
+  default_control_channel: "auto"
+  panel_update_mode: "edit_last"
 
 curation:
   enabled: true
