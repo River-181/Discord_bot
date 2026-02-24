@@ -210,6 +210,17 @@ def _strip_urls_for_title(text: str) -> str:
     return _URL_SPLIT_PATTERN.sub("", text or "").strip()
 
 
+def _to_positive_int(value: object, default: int) -> int:
+    try:
+        if value is None:
+            return max(1, int(default))
+        if isinstance(value, str):
+            value = value.strip()
+        return max(1, int(value))
+    except (TypeError, ValueError):
+        return max(1, int(default))
+
+
 def _short_url_display(url: str) -> str:
     try:
         parsed = urlparse(url)
@@ -400,7 +411,7 @@ class CurationService:
             "routing": routing,
             "mentions": mentions,
             "approver_policy": str(self.config.get("approver_policy", "manage_guild")).strip().lower(),
-            "dedupe_days": max(1, int(self.config.get("dedupe_days", 30) or 30)),
+            "dedupe_days": max(1, _to_positive_int(self.config.get("dedupe_days", 30), 30)),
             "attachment_reupload": bool(self.config.get("attachment_reupload", True)),
             "fallback_link_only_when_upload_fails": bool(self.config.get("fallback_link_only_when_upload_fails", True)),
             "category_name": str(self.config.get("category_name", "------🗂️-07-큐레이션-----")).strip(),
@@ -1350,11 +1361,21 @@ class CurationService:
         reviewer_id: int,
         create_thread: bool = False,
     ) -> PublishResult:
+        def _safe_int(value: Any) -> int | None:
+            if value is None:
+                return None
+            if isinstance(value, int):
+                return value
+            try:
+                return int(str(value).strip())
+            except (TypeError, ValueError):
+                return None
+
         posts = self._latest_posts_by_submission()
         target_post = posts.get(str(duplicate_target.get("submission_id")))
-        channel_id = self._to_int_or_none(target_post.get("target_channel_id", 0)) if target_post else None
-        message_id = self._to_int_or_none(target_post.get("target_message_id", 0)) if target_post else None
-        thread_id = self._to_int_or_none(target_post.get("thread_id", 0)) if target_post else None
+        channel_id = _safe_int(target_post.get("target_channel_id")) if target_post else None
+        message_id = _safe_int(target_post.get("target_message_id")) if target_post else None
+        thread_id = _safe_int(target_post.get("thread_id")) if target_post else None
         source_channel_id = self._to_int_or_none(submission.get("source_channel_id", 0))
         notify_channel_id = channel_id or source_channel_id or None
 
@@ -1444,157 +1465,175 @@ class CurationService:
         source_message: discord.Message | None = None,
         create_discussion_thread: bool = False,
     ) -> PublishResult:
+        reviewer = int(reviewer_id)
         submission = self.get_submission(submission_id)
         if not submission:
             return PublishResult("missing", submission_id, None, None, None, None)
 
-        if str(submission.get("status", "pending")).lower() not in {"pending"}:
-            return PublishResult("already_handled", submission_id, None, None, None, None)
+        try:
+            if str(submission.get("status", "pending")).lower() not in {"pending"}:
+                return PublishResult("already_handled", submission_id, None, None, None, None)
 
-        duplicates = self._candidate_duplicates(submission)
-        if duplicates:
-            return await self._merge_into_existing(
-                guild=guild,
-                submission=submission,
-                duplicate_target=duplicates[0],
-                reviewer_id=reviewer_id,
-                create_thread=create_discussion_thread,
+            duplicates = self._candidate_duplicates(submission)
+            if duplicates:
+                return await self._merge_into_existing(
+                    guild=guild,
+                    submission=submission,
+                    duplicate_target=duplicates[0],
+                    reviewer_id=reviewer,
+                    create_thread=create_discussion_thread,
+                )
+
+            curation_type = str(submission.get("classified_type", "idea")).lower()
+            if curation_type not in _ALLOWED_TYPES:
+                curation_type = "idea"
+
+            target_name = (override_channel_name or self._routing_channel_name(curation_type)).strip()
+            target_channel = find_text_channel_by_name(guild, target_name)
+            if not target_channel:
+                await self.storage.append_ops_event(
+                    "curation_publish_failed",
+                    {
+                        "guild_id": guild.id,
+                        "channel_id": None,
+                        "user_id": reviewer,
+                        "command_name": "curation_publish",
+                        "submission_id": submission_id,
+                        "reason": f"target_channel_missing:{target_name}",
+                    },
+                )
+                return PublishResult("target_channel_missing", submission_id, None, None, None, None)
+
+            mention_role_name = self._mention_role_name(curation_type)
+            mention_role = self._find_role_by_name(guild, mention_role_name)
+
+            tags = override_tags if override_tags is not None else list(submission.get("tags") or [])
+            text = str(submission.get("raw_text") or "")
+            urls = [str(x) for x in (submission.get("urls") or []) if str(x)]
+            attachments = submission.get("attachments") if isinstance(submission.get("attachments"), list) else []
+            fallback_title = self._build_title(curation_type, text, urls, attachments)
+            title = self._sanitize_title(str(submission.get("normalized_title") or ""), fallback=fallback_title)
+            summary = _normalize_display_summary(str(submission.get("normalized_summary") or ""))
+            if self._is_summary_weak(summary):
+                summary = self._build_fallback_summary(curation_type, title, urls)
+            summary_lines = self._build_publish_bullets(summary)
+            hook = self._build_hook(curation_type, title, "\n".join(summary_lines), tags)
+
+            lines = self._build_published_message_lines(
+                curation_type=curation_type,
+                hook=hook,
+                title=truncate_text(title, 72, suffix=""),
+                summary="\n".join(summary_lines),
+                urls=urls,
+                author_id=int(submission.get("author_id") or 0),
+                author_name=str(submission.get("author_name") or str(submission.get("author_id") or "")),
+                source_message_link=str(submission.get("source_message_link") or ""),
+                mention_role=mention_role,
+                mention_role_name=mention_role_name,
+                tags=tags,
+            )
+            content = "\n".join(lines)
+
+            files: list[discord.File] = []
+            if source_message and self._current_config()["attachment_reupload"]:
+                for attachment in source_message.attachments[:8]:
+                    try:
+                        files.append(await attachment.to_file())
+                    except Exception:
+                        continue
+
+            allowed_mentions = discord.AllowedMentions(users=True, roles=True, everyone=False)
+            posted_message = await retry_discord_call(
+                lambda: target_channel.send(
+                    content=content,
+                    suppress_embeds=True,
+                    files=files if files else None,
+                    allowed_mentions=allowed_mentions,
+                )
             )
 
-        curation_type = str(submission.get("classified_type", "idea")).lower()
-        if curation_type not in _ALLOWED_TYPES:
-            curation_type = "idea"
+            thread_id: int | None = None
+            if create_discussion_thread:
+                thread_name = truncate_text(f"{title} 토론", 72, suffix="")
+                try:
+                    discussion_thread = await retry_discord_call(
+                        lambda: posted_message.create_thread(name=thread_name, auto_archive_duration=60 * 24)
+                    )
+                    thread_id = int(discussion_thread.id)
+                except Exception:
+                    await self.storage.append_ops_event(
+                        "curation_thread_open_failed",
+                        {
+                            "guild_id": guild.id,
+                            "channel_id": target_channel.id,
+                            "user_id": reviewer,
+                            "command_name": "curation_publish",
+                            "submission_id": submission_id,
+                            "result": "discussion_thread_create_failed",
+                        },
+                        idempotency_key=f"curation_discussion_open_failed:{submission_id}:{posted_message.id}",
+                    )
 
-        target_name = (override_channel_name or self._routing_channel_name(curation_type)).strip()
-        target_channel = find_text_channel_by_name(guild, target_name)
-        if not target_channel:
+            post_payload = {
+                "post_id": str(uuid.uuid4()),
+                "submission_id": submission_id,
+                "target_channel_id": target_channel.id,
+                "target_message_id": posted_message.id,
+                "thread_id": thread_id,
+                "mention_role_id": mention_role.id if mention_role else None,
+                "published_at": self._now_iso(),
+            }
+            await self.storage.append_curation_post(post_payload)
+
+            updated = dict(submission)
+            updated["status"] = "approved"
+            updated["reviewer_id"] = reviewer
+            updated["reviewed_at"] = self._now_iso()
+            if override_channel_name:
+                updated["override_channel"] = override_channel_name
+            if override_tags is not None:
+                updated["tags"] = override_tags
+            await self.storage.append_curation_submission(updated)
+
+            await self.storage.append_ops_event(
+                "curation_approved",
+                {
+                    "guild_id": guild.id,
+                    "channel_id": target_channel.id,
+                    "user_id": reviewer,
+                    "command_name": "curation_publish",
+                    "submission_id": submission_id,
+                    "target_message_id": posted_message.id,
+                    "thread_id": thread_id,
+                    "curation_type": curation_type,
+                },
+                idempotency_key=f"curation_approved:{submission_id}",
+            )
+
+            return PublishResult(
+                status="approved",
+                submission_id=submission_id,
+                target_channel_id=target_channel.id,
+                target_message_id=posted_message.id,
+                thread_id=thread_id,
+                merged_into_submission_id=None,
+            )
+
+        except Exception as exc:
             await self.storage.append_ops_event(
                 "curation_publish_failed",
                 {
                     "guild_id": guild.id,
-                    "channel_id": None,
-                    "user_id": reviewer_id,
+                    "channel_id": getattr(guild, "id", None),
+                    "user_id": reviewer,
                     "command_name": "curation_publish",
                     "submission_id": submission_id,
-                    "reason": f"target_channel_missing:{target_name}",
+                    "result": "exception",
+                    "error": f"{type(exc).__name__}: {exc}",
                 },
+                idempotency_key=f"curation_publish_failed:{submission_id}:{reviewer}:{type(exc).__name__}",
             )
-            return PublishResult("target_channel_missing", submission_id, None, None, None, None)
-
-        mention_role_name = self._mention_role_name(curation_type)
-        mention_role = self._find_role_by_name(guild, mention_role_name)
-
-        tags = override_tags if override_tags is not None else list(submission.get("tags") or [])
-        text = str(submission.get("raw_text") or "")
-        urls = [str(x) for x in (submission.get("urls") or []) if str(x)]
-        attachments = submission.get("attachments") if isinstance(submission.get("attachments"), list) else []
-        fallback_title = self._build_title(curation_type, text, urls, attachments)
-        title = self._sanitize_title(str(submission.get("normalized_title") or ""), fallback=fallback_title)
-        summary = _normalize_display_summary(str(submission.get("normalized_summary") or ""))
-        if self._is_summary_weak(summary):
-            summary = self._build_fallback_summary(curation_type, title, urls)
-        summary_lines = self._build_publish_bullets(summary)
-        hook = self._build_hook(curation_type, title, "\n".join(summary_lines), tags)
-
-        lines = self._build_published_message_lines(
-            curation_type=curation_type,
-            hook=hook,
-            title=truncate_text(title, 72, suffix=""),
-            summary="\n".join(summary_lines),
-            urls=urls,
-            author_id=int(submission.get("author_id") or 0),
-            author_name=str(submission.get("author_name") or str(submission.get("author_id") or "")),
-            source_message_link=str(submission.get("source_message_link") or ""),
-            mention_role=mention_role,
-            mention_role_name=mention_role_name,
-            tags=tags,
-        )
-        content = "\n".join(lines)
-
-        files: list[discord.File] = []
-        if source_message and self._current_config()["attachment_reupload"]:
-            for attachment in source_message.attachments[:8]:
-                try:
-                    files.append(await attachment.to_file())
-                except Exception:
-                    continue
-
-        allowed_mentions = discord.AllowedMentions(users=True, roles=True, everyone=False)
-        posted_message = await retry_discord_call(
-            lambda: target_channel.send(
-                content=content,
-                suppress_embeds=True,
-                files=files if files else None,
-                allowed_mentions=allowed_mentions,
-            )
-        )
-
-        thread_id: int | None = None
-        if create_discussion_thread:
-            thread_name = truncate_text(f"{title} 토론", 72, suffix="")
-            try:
-                discussion_thread = await retry_discord_call(
-                    lambda: posted_message.create_thread(name=thread_name, auto_archive_duration=60 * 24)
-                )
-                thread_id = int(discussion_thread.id)
-            except Exception:
-                await self.storage.append_ops_event(
-                    "curation_thread_open_failed",
-                    {
-                        "guild_id": guild.id,
-                        "channel_id": target_channel.id,
-                        "user_id": reviewer_id,
-                        "command_name": "curation_publish",
-                        "submission_id": submission_id,
-                        "result": "discussion_thread_create_failed",
-                    },
-                    idempotency_key=f"curation_discussion_open_failed:{submission_id}:{posted_message.id}",
-                )
-
-        post_payload = {
-            "post_id": str(uuid.uuid4()),
-            "submission_id": submission_id,
-            "target_channel_id": target_channel.id,
-            "target_message_id": posted_message.id,
-            "thread_id": thread_id,
-            "mention_role_id": mention_role.id if mention_role else None,
-            "published_at": self._now_iso(),
-        }
-        await self.storage.append_curation_post(post_payload)
-
-        updated = dict(submission)
-        updated["status"] = "approved"
-        updated["reviewer_id"] = reviewer_id
-        updated["reviewed_at"] = self._now_iso()
-        if override_channel_name:
-            updated["override_channel"] = override_channel_name
-        if override_tags is not None:
-            updated["tags"] = override_tags
-        await self.storage.append_curation_submission(updated)
-
-        await self.storage.append_ops_event(
-            "curation_approved",
-            {
-                "guild_id": guild.id,
-                "channel_id": target_channel.id,
-                "user_id": reviewer_id,
-                "command_name": "curation_publish",
-                "submission_id": submission_id,
-                "target_message_id": posted_message.id,
-                "thread_id": thread_id,
-                "curation_type": curation_type,
-            },
-            idempotency_key=f"curation_approved:{submission_id}",
-        )
-
-        return PublishResult(
-            status="approved",
-            submission_id=submission_id,
-            target_channel_id=target_channel.id,
-            target_message_id=posted_message.id,
-            thread_id=thread_id,
-            merged_into_submission_id=None,
-        )
+            return PublishResult("failed", submission_id, None, None, None, None)
 
     async def update_submission_overrides(
         self,

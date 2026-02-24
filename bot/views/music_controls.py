@@ -4,6 +4,8 @@ from typing import TYPE_CHECKING
 
 import discord
 
+from bot.utils import truncate_text
+
 if TYPE_CHECKING:
     from bot.app import MangsangBot
 
@@ -110,10 +112,30 @@ class MusicControlsView(discord.ui.View, _MusicControlCallbackMixin):
         super().__init__(timeout=None)
         self.bot = bot
         self.guild_id = guild_id
+        self._sync_button_state()
 
-    def _format_volume_line(self, guild_id: int) -> str:
-        percent = self.bot.music_service.volume_percent(guild_id)
-        return f"음량: `{percent}%`"
+    def _sync_button_state(self) -> None:
+        guild = self.bot.get_guild(self.guild_id)
+        state = self.bot.music_service.get_state(self.guild_id)
+        queue_count = len(state.queue) if state else 0
+        has_current = bool(state and state.current)
+
+        voice_client = guild.voice_client if guild else None
+        is_connected = bool(voice_client and voice_client.is_connected())
+        is_playing = bool(is_connected and voice_client.is_playing())
+        is_paused = bool(is_connected and voice_client.is_paused())
+
+        self.pause_resume.label = "일시정지" if is_playing else "재개"
+        self.pause_resume.emoji = "⏸️" if is_playing else "▶️"
+        self.pause_resume.style = discord.ButtonStyle.primary if is_playing else discord.ButtonStyle.success
+
+        has_playback_context = is_playing or is_paused or has_current
+        self.pause_resume.disabled = not has_playback_context
+        self.skip.disabled = not has_playback_context
+        self.stop.disabled = not has_playback_context and queue_count == 0
+        self.leave.disabled = not is_connected
+        self.vol_down.disabled = not is_connected
+        self.vol_up.disabled = not is_connected
 
     def _queue_preview(self, guild_id: int, *, max_items: int = 5) -> str:
         state = self.bot.music_service.get_state(guild_id)
@@ -121,15 +143,22 @@ class MusicControlsView(discord.ui.View, _MusicControlCallbackMixin):
             return "없음"
         if not state.queue:
             return "비어 있음"
-        titles = [q.title for q in list(state.queue)[:max_items]]
-        tail = f" (+{len(state.queue) - max_items})" if len(state.queue) > max_items else ""
-        return ", ".join(titles) + tail
+        lines = [f"{idx + 1}. {truncate_text(track.title, 70)}" for idx, track in enumerate(list(state.queue)[:max_items])]
+        if len(state.queue) > max_items:
+            lines.append(f"... 외 {len(state.queue) - max_items}곡")
+        return "\n".join(lines)
 
     async def _notify(self, interaction: discord.Interaction, command_name: str, result: str, message: str) -> None:
         await self._reply(interaction, message)
         await self._send_log(interaction, command_name, result)
 
-    @discord.ui.button(label="⏸️/▶️", style=discord.ButtonStyle.primary, custom_id="music:pause_resume", row=0)
+    @discord.ui.button(
+        label="일시정지",
+        emoji="⏸️",
+        style=discord.ButtonStyle.primary,
+        custom_id="music:pause_resume",
+        row=0,
+    )
     async def pause_resume(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         del button  # signature compatibility
         ctx = await self._require_context(interaction, "music_pause_resume")
@@ -155,7 +184,7 @@ class MusicControlsView(discord.ui.View, _MusicControlCallbackMixin):
         except Exception as exc:
             await self._notify(interaction, "music_pause_resume", f"error:{type(exc).__name__}", f"작업 실패: {type(exc).__name__}")
 
-    @discord.ui.button(label="⏭️", style=discord.ButtonStyle.secondary, custom_id="music:skip", row=0)
+    @discord.ui.button(label="스킵", emoji="⏭️", style=discord.ButtonStyle.secondary, custom_id="music:skip", row=0)
     async def skip(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         del button
         ctx = await self._require_context(interaction, "music_skip")
@@ -174,7 +203,7 @@ class MusicControlsView(discord.ui.View, _MusicControlCallbackMixin):
         except Exception as exc:
             await self._notify(interaction, "music_skip", f"error:{type(exc).__name__}", f"스킵 실패: {type(exc).__name__}")
 
-    @discord.ui.button(label="⏹️", style=discord.ButtonStyle.danger, custom_id="music:stop", row=0)
+    @discord.ui.button(label="정지", emoji="⏹️", style=discord.ButtonStyle.danger, custom_id="music:stop", row=0)
     async def stop(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         del button
         ctx = await self._require_context(interaction, "music_stop")
@@ -193,7 +222,7 @@ class MusicControlsView(discord.ui.View, _MusicControlCallbackMixin):
         except Exception as exc:
             await self._notify(interaction, "music_stop", f"error:{type(exc).__name__}", f"중지 실패: {type(exc).__name__}")
 
-    @discord.ui.button(label="🚪", style=discord.ButtonStyle.secondary, custom_id="music:leave", row=1)
+    @discord.ui.button(label="나가기", emoji="🚪", style=discord.ButtonStyle.secondary, custom_id="music:leave", row=1)
     async def leave(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         del button
         ctx = await self._require_context(interaction, "music_leave")
@@ -212,7 +241,7 @@ class MusicControlsView(discord.ui.View, _MusicControlCallbackMixin):
         except Exception as exc:
             await self._notify(interaction, "music_leave", f"error:{type(exc).__name__}", f"나가기 실패: {type(exc).__name__}")
 
-    @discord.ui.button(label="-10", style=discord.ButtonStyle.secondary, custom_id="music:vol_down", row=1)
+    @discord.ui.button(label="-10%", emoji="🔉", style=discord.ButtonStyle.secondary, custom_id="music:vol_down", row=1)
     async def vol_down(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         del button
         ctx = await self._require_context(interaction, "music_volume", allow_admin_without_same_channel=True)
@@ -237,7 +266,7 @@ class MusicControlsView(discord.ui.View, _MusicControlCallbackMixin):
         except Exception as exc:
             await self._notify(interaction, "music_volume", f"error:{type(exc).__name__}", f"음량 조절 실패: {type(exc).__name__}")
 
-    @discord.ui.button(label="+10", style=discord.ButtonStyle.secondary, custom_id="music:vol_up", row=1)
+    @discord.ui.button(label="+10%", emoji="🔊", style=discord.ButtonStyle.secondary, custom_id="music:vol_up", row=1)
     async def vol_up(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         del button
         ctx = await self._require_context(interaction, "music_volume", allow_admin_without_same_channel=True)
@@ -262,16 +291,16 @@ class MusicControlsView(discord.ui.View, _MusicControlCallbackMixin):
         except Exception as exc:
             await self._notify(interaction, "music_volume", f"error:{type(exc).__name__}", f"음량 조절 실패: {type(exc).__name__}")
 
-    @discord.ui.button(label="🔢큐", style=discord.ButtonStyle.secondary, custom_id="music:queue_refresh", row=2)
+    @discord.ui.button(label="큐 보기", emoji="📜", style=discord.ButtonStyle.secondary, custom_id="music:queue_refresh", row=2)
     async def queue_refresh(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         del button
         if interaction.guild is None:
             await self._reply(interaction, "길드 채널에서만 사용할 수 있습니다.")
             return
         preview = self._queue_preview(interaction.guild.id)
-        await self._notify(interaction, "music_queue", "ok", f"현재 큐: {preview}")
+        await self._notify(interaction, "music_queue", "ok", f"현재 큐\n{preview}")
 
-    @discord.ui.button(label="🔁패널", style=discord.ButtonStyle.success, custom_id="music:panel", row=2)
+    @discord.ui.button(label="새로고침", emoji="🔁", style=discord.ButtonStyle.success, custom_id="music:panel", row=2)
     async def panel_refresh(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         del button
         if interaction.guild is None:

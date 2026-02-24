@@ -1,8 +1,8 @@
 # Team.망상궤도 내부 지식 문서
-## Discord 세팅 + AI + 봇 운영 통합 매뉴얼 (2026-02-18 기준)
+## Discord 세팅 + AI + 봇 운영 통합 매뉴얼 (2026-02-25 반영)
 
-문서 버전: v1.0  
-작성 기준일: 2026-02-18  
+문서 버전: v1.1  
+작성 기준일: 2026-02-25  
 적용 대상: Team.망상궤도 Discord 서버 운영자/개발자/PM  
 표준 시간대: Asia/Seoul
 
@@ -265,7 +265,7 @@ cd /Users/river/tools/mangsang-orbit-assistant
 ```
 
 통과 기준:
-- `guild_command_count = 7`
+- `guild_command_count = 16`
 - `global_command_count = 0`
 - `meeting_options_equal = True`
 - `sync-probe ok phase=migration`
@@ -308,6 +308,31 @@ cd /Users/river/tools/mangsang-orbit-assistant
 1. `source_channel:#회의`로 재실행
 2. `scope`와 채널 타입 확인
 3. 봇 권한/intent 확인
+
+### G-4. 증상: 음악 패널 버튼에서 `상호작용 실패`
+원인:
+- 구버전 패널 메시지의 컴포넌트가 남아 있거나 재시작 직후 stale 상태
+
+대응:
+1. `/music panel` 실행으로 패널 재게시
+2. 동일 현상 반복 시 `./scripts/botctl.sh restart` 후 재확인
+3. 채널에 구 패널 메시지가 여러 개면 최신 1개만 남기고 정리
+
+### G-5. 증상: 음성 채널에서 음악이 들리지 않음
+원인:
+- 채널 권한 부족 (`connect`/`speak`)
+- Stage 채널에서 봇이 청중(suppressed) 상태
+- Opus/FFmpeg 경로 누락
+
+대응:
+1. 대상 음성 채널에서 봇 권한 `연결(connect)`/`말하기(speak)` 확인
+2. Stage 채널이면 봇 발언 허용(unsuppress) 적용
+3. 환경값 확인: `OPUS_LIBRARY_PATH`, `FFMPEG_PATH`
+4. 봇 재기동 후 재테스트 (`/music join` -> `/music play`)
+
+### G-6. 뉴스 레이다 정기 발행 시간
+- 아침 발행: `매일 08:00` (`news_digest_morning_cron = "0 8 * * *"`)
+- 저녁 발행: `평일 18:00` (`news_digest_evening_cron = "0 18 * * 1-5"`)
 
 ---
 

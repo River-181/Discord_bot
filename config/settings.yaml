@@ -63,7 +63,7 @@ scheduler:
   # always: 매번 전송 (스팸 가능)
   # never: 디스코드 전송 안 함 (ops_events.ndjson에만 기록)
   inactivity_scan_post_mode: "only_when_action"
-  news_digest_morning_cron: "0 9 * * 1-5"
+  news_digest_morning_cron: "0 8 * * *"
   news_digest_evening_cron: "0 18 * * 1-5"
   music_housekeeping_cron: "*/5 * * * *"
 

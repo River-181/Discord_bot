@@ -76,6 +76,7 @@ python3 tools/dashboard/scripts/agent_teamctl.py status
 - 제어 권한: `봇과 같은 음성 채널 사용자만`
 - 알림 정책: `low_noise` (ephemeral 중심)
 - 길이 제한: 기본 `180분` (`music.max_track_minutes`)
+- 패널 갱신: `edit_last` + persistent view(재시작 후 기존 버튼 유지)
 
 지원 명령:
 - `/music join channel:#voice(optional)`
@@ -93,6 +94,17 @@ python3 tools/dashboard/scripts/agent_teamctl.py status
 소스 정책:
 - 일반 사용자: 직접 URL(`http/https`)만 허용
 - allowlist 사용자: YouTube URL/검색어 허용(`yt-dlp`)
+
+패널 UI:
+- 임베드 섹션: `현재 재생`, `다음 큐`, `세션(상태/음량/채널)`
+- 상태 기반 버튼: `일시정지/재개`, `스킵`, `정지`, `나가기`, `-10%`, `+10%`, `큐 보기`, `새로고침`
+- 재생 컨텍스트가 없을 때 일부 버튼이 자동 비활성화됨
+
+## Scheduler Defaults
+`config/settings.yaml` 기본/권장 스케줄:
+- `news_digest_morning_cron`: `0 8 * * *` (매일 08:00)
+- `news_digest_evening_cron`: `0 18 * * 1-5` (평일 18:00)
+- `music_housekeeping_cron`: `*/5 * * * *`
 
 ## Music Playback Architectures
 이 저장소는 현재 `discord.py + FFmpeg + yt-dlp` 방식입니다.
@@ -250,6 +262,13 @@ OPUS_LIBRARY_PATH=/opt/homebrew/opt/opus/lib/libopus.0.dylib
 ./scripts/botctl.sh stop --launchd
 ./scripts/botctl.sh start --launchd
 ```
+- 증상: `상호작용 실패`
+  - 원인: 구버전 패널 메시지/재시작 직후 stale 컴포넌트
+  - 조치: `/music panel` 1회 실행으로 최신 패널 재게시
+- 증상: 음성 채널에서 재생 시작은 되는데 소리가 안 남
+  - 조치 1: 대상 음성 채널에서 봇 권한 `연결(connect)` + `말하기(speak)` 확인
+  - 조치 2: Stage 채널이면 봇이 청중(suppressed) 상태가 아닌지 확인(발언 허용)
+  - 조치 3: `FFMPEG_PATH`, `OPUS_LIBRARY_PATH` 재확인 후 재시작
 
 ## Docs
 - `docs/command-migration-runbook-2026-02-18.md`

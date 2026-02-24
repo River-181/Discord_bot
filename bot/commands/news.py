@@ -78,7 +78,7 @@ def register(bot: "MangsangBot") -> None:
 
         digest_channel = bot.settings.channels.get("news_digest", "")
         log_channel = bot.settings.channels.get("news_log", "")
-        morning_cron = str(scheduler_cfg.get("news_digest_morning_cron", "0 9 * * 1-5"))
+        morning_cron = str(scheduler_cfg.get("news_digest_morning_cron", "0 8 * * *"))
         evening_cron = str(scheduler_cfg.get("news_digest_evening_cron", "0 18 * * 1-5"))
 
         lines = [

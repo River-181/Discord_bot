@@ -260,6 +260,61 @@ class MusicService:
             )
         return self._opus_loaded
 
+    @staticmethod
+    def _bot_member(guild: discord.Guild) -> discord.Member | None:
+        me = getattr(guild, "me", None)
+        if me is not None:
+            return me
+        state = getattr(guild, "_state", None)
+        user = getattr(state, "user", None) if state else None
+        user_id = getattr(user, "id", None)
+        if user_id is None:
+            return None
+        return guild.get_member(int(user_id))
+
+    def _validate_voice_permissions(
+        self,
+        guild: discord.Guild,
+        channel: discord.VoiceChannel | discord.StageChannel,
+    ) -> None:
+        member = self._bot_member(guild)
+        if member is None:
+            return
+        if not hasattr(channel, "permissions_for"):
+            return
+        perms = channel.permissions_for(member)
+        missing: list[str] = []
+        if not getattr(perms, "connect", False):
+            missing.append("connect")
+        if not getattr(perms, "speak", False):
+            missing.append("speak")
+        if missing:
+            raise MusicError(
+                "음성 채널 권한이 부족합니다. "
+                f"봇 권한 확인 필요: {', '.join(missing)}"
+            )
+
+    async def _ensure_stage_unsuppressed(self, guild: discord.Guild) -> None:
+        voice_client = guild.voice_client
+        if not voice_client or not voice_client.is_connected():
+            return
+        if not isinstance(voice_client.channel, discord.StageChannel):
+            return
+
+        member = self._bot_member(guild)
+        if member is None:
+            return
+        voice_state = getattr(member, "voice", None)
+        if voice_state is None or not getattr(voice_state, "suppress", False):
+            return
+        try:
+            await member.edit(suppress=False)
+        except Exception as exc:
+            raise MusicError(
+                "스테이지 채널에서 봇이 청중(suppressed) 상태입니다. "
+                "스테이지에서 발언 허용(unsuppress) 후 다시 재생해 주세요."
+            ) from exc
+
     async def _log(self, event_type: str, payload: dict[str, Any]) -> None:
         try:
             await self.storage.append_ops_event(event_type, payload)
@@ -456,11 +511,24 @@ class MusicService:
         async with lock:
             voice_client = guild.voice_client
             try:
+                self._validate_voice_permissions(guild, channel)
                 if voice_client and voice_client.is_connected():
                     if voice_client.channel and voice_client.channel.id != channel.id:
                         await voice_client.move_to(channel)
                 else:
                     voice_client = await channel.connect()
+            except MusicError as exc:
+                await self._log(
+                    "music_join_failed",
+                    {
+                        "guild_id": guild.id,
+                        "channel_id": channel.id,
+                        "user_id": None,
+                        "command_name": "music_join",
+                        "result": f"MusicError: {exc}",
+                    },
+                )
+                raise
             except Exception as exc:
                 await self._log(
                     "music_join_failed",
@@ -478,6 +546,7 @@ class MusicService:
             state.voice_channel_id = channel.id
             state.text_channel_id = text_channel_id
             state.last_activity_at = datetime.now(UTC)
+            await self._ensure_stage_unsuppressed(guild)
             await self.refresh_control_panel(guild, reason="join")
             return voice_client
 
@@ -577,6 +646,10 @@ class MusicService:
             state.current = None
             await self.refresh_control_panel(guild, reason="connection_lost")
             return False
+        channel = voice_client.channel
+        if isinstance(channel, (discord.VoiceChannel, discord.StageChannel)):
+            self._validate_voice_permissions(guild, channel)
+            await self._ensure_stage_unsuppressed(guild)
         if voice_client.is_playing() or voice_client.is_paused():
             return False
         if not state.queue:

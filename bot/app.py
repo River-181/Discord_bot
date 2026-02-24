@@ -27,7 +27,7 @@ from bot.services.event_reminder import EventReminderService
 from bot.services.warroom import WarroomService
 from bot.triggers.deep_work import DeepWorkGuard
 from bot.triggers.thread_hygiene import ThreadHygieneEngine
-from bot.utils import find_text_channel_by_name
+from bot.utils import find_text_channel_by_name, truncate_text
 from bot.views.music_controls import MusicControlsView
 
 logging.basicConfig(
@@ -202,6 +202,8 @@ class MangsangBot(discord.Client):
 
     async def setup_hook(self) -> None:
         register_all(self)
+        # Register persistent music controls so old panel messages keep working after bot restarts.
+        self.add_view(MusicControlsView(bot=self, guild_id=0))
         self.tree.on_error = self._on_app_command_error
         if self.command_guild:
             synced = await self.tree.sync(guild=self.command_guild)
@@ -246,6 +248,64 @@ class MangsangBot(discord.Client):
                 lambda chunk_text=chunk: ops_channel.send(f"🧠 망상궤도 비서 로그: {chunk_text}")
             )
 
+    @staticmethod
+    def _format_duration_text(duration_sec: int | None) -> str:
+        if not duration_sec:
+            return "미상"
+        minutes, seconds = divmod(int(duration_sec), 60)
+        hours, minutes = divmod(minutes, 60)
+        if hours > 0:
+            return f"{hours}시간 {minutes:02d}분 {seconds:02d}초"
+        return f"{minutes}분 {seconds:02d}초"
+
+    @staticmethod
+    def _volume_meter(percent: int, *, width: int = 10) -> str:
+        clamped = max(0, min(200, int(percent)))
+        filled = int(round((clamped / 200.0) * width))
+        return ("█" * filled) + ("░" * (width - filled))
+
+    @staticmethod
+    def _playback_status(guild: discord.Guild) -> tuple[str, discord.Color]:
+        voice_client = guild.voice_client
+        if not voice_client or not voice_client.is_connected():
+            return "미연결", discord.Color.dark_grey()
+        if voice_client.is_paused():
+            return "일시정지", discord.Color.orange()
+        if voice_client.is_playing():
+            return "재생중", discord.Color.green()
+        return "대기", discord.Color.blurple()
+
+    def _format_now_playing(self, guild_id: int) -> str:
+        state = self.music_service.get_state(guild_id)
+        current_track = state.current if state else None
+        if not current_track:
+            return "재생 중인 트랙이 없습니다."
+
+        title = truncate_text(current_track.title, 90)
+        lines = [f"**{title}**"]
+        if current_track.requester_id:
+            lines.append(f"요청자: <@{current_track.requester_id}>")
+        lines.append(f"소스: `{current_track.source_type}`")
+        lines.append(f"길이: `{self._format_duration_text(current_track.duration_sec)}`")
+        if current_track.web_url and len(current_track.web_url) <= 400:
+            lines.append(f"[원본 링크]({current_track.web_url})")
+        return "\n".join(lines)
+
+    def _format_queue_preview(self, guild_id: int, *, max_items: int = 4) -> tuple[int, str]:
+        state = self.music_service.get_state(guild_id)
+        if not state:
+            return 0, "비어 있음"
+        queue_items = list(state.queue)
+        if not queue_items:
+            return 0, "비어 있음"
+
+        lines: list[str] = []
+        for idx, track in enumerate(queue_items[:max_items], start=1):
+            lines.append(f"`{idx:02d}` {truncate_text(track.title, 70)}")
+        if len(queue_items) > max_items:
+            lines.append(f"... 외 {len(queue_items) - max_items}곡")
+        return len(queue_items), "\n".join(lines)
+
     async def _render_music_control_panel(self, guild: discord.Guild) -> None:
         if not self.music_service.enabled:
             return
@@ -257,35 +317,34 @@ class MangsangBot(discord.Client):
         if channel is None:
             return
 
-        current_track = state.current
-        lines: list[str] = []
-        if current_track:
-            lines.append(f"🎵 지금 재생: **{current_track.title}**")
-            lines.append(f"요청자: <@{current_track.requester_id}>")
-            lines.append(f"출처: `{current_track.source_type}`")
-            if current_track.duration_sec:
-                lines.append(f"길이: `{current_track.duration_sec // 60}분 {current_track.duration_sec % 60:02d}초`")
-        else:
-            lines.append("🎵 현재 재생 중인 트랙이 없습니다.")
-
-        queue_items = list(state.queue)
-        if queue_items:
-            queue_preview = ", ".join(track.title for track in queue_items[:4])
-            if len(queue_items) > 4:
-                queue_preview = f"{queue_preview} +{len(queue_items) - 4}"
-            lines.append(f"다음 큐: {queue_preview}")
-        else:
-            lines.append("다음 큐: 비어 있음")
-
-        lines.append(f"음량: `{self.music_service.volume_percent(guild.id)}%`")
-        lines.append(f"상태: {'재생중' if (guild.voice_client and guild.voice_client.is_playing()) else '대기'}")
+        status_text, status_color = self._playback_status(guild)
+        queue_total, queue_preview = self._format_queue_preview(guild.id)
+        volume_percent = self.music_service.volume_percent(guild.id)
+        voice_client = guild.voice_client
+        voice_channel_ref = (
+            f"<#{voice_client.channel.id}>"
+            if voice_client and voice_client.is_connected() and getattr(voice_client, "channel", None)
+            else "미연결"
+        )
 
         embed = discord.Embed(
             title="🎵 음악 컨트롤",
-            description="\n".join(lines),
-            color=discord.Color.green(),
+            description="버튼으로 재생을 제어하세요.",
+            color=status_color,
         )
-        embed.set_footer(text=f"guild_id={guild.id}")
+        embed.add_field(name="현재 재생", value=self._format_now_playing(guild.id), inline=False)
+        embed.add_field(name=f"다음 큐 ({queue_total}곡)", value=queue_preview, inline=False)
+        embed.add_field(
+            name="세션",
+            value=(
+                f"상태: `{status_text}`\n"
+                f"음량: `{volume_percent}%` `{self._volume_meter(volume_percent)}`\n"
+                f"채널: {voice_channel_ref}"
+            ),
+            inline=False,
+        )
+        embed.set_footer(text="버튼 조작은 봇과 같은 음성 채널에서만 가능합니다.")
+        embed.timestamp = discord.utils.utcnow()
 
         view = MusicControlsView(bot=self, guild_id=guild.id)
 
@@ -334,7 +393,7 @@ class MangsangBot(discord.Client):
             news_cfg = self.settings.raw.get("news", {}) if hasattr(self.settings, "raw") else {}
             news_enabled = bool(news_cfg.get("enabled", False))
             if news_enabled:
-                morning_cron = str(self.settings.scheduler.get("news_digest_morning_cron", "0 9 * * 1-5"))
+                morning_cron = str(self.settings.scheduler.get("news_digest_morning_cron", "0 8 * * *"))
                 evening_cron = str(self.settings.scheduler.get("news_digest_evening_cron", "0 18 * * 1-5"))
                 self.bot_scheduler.add_cron_job(
                     "news_digest_morning",
