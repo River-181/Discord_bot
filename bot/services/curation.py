@@ -635,6 +635,22 @@ class CurationService:
     def _curation_intro(curation_type: str) -> str:
         return _TYPE_INTRO.get(curation_type, _TYPE_INTRO["idea"])
 
+    def _one_sentence_teaser(self, curation_type: str, title: str, tags: list[str]) -> str:
+        type_label = str(curation_type).lower()
+        tag_hint = " · ".join(t for t in (tags or [])[:2]) or "#curation"
+        clean_title = self._sanitize_title(title, fallback="[큐레이션]")
+        if type_label == "link":
+            return f"🧠 제보 핵심 한 줄: `{clean_title}` / 참고 링크가 도착했습니다. 적용 가능 항목인지 빠르게 판단하세요. ({tag_hint})"
+        if type_label == "idea":
+            return f"🚀 제보 핵심 한 줄: `{clean_title}` / 아이디어로 바로 연결 가능한 제안입니다. 실행 포인트를 골라보세요. ({tag_hint})"
+        if type_label == "music":
+            return f"🎧 제보 핵심 한 줄: `{clean_title}` / 음악/사운드 관련 자원입니다. 콘텐츠 운영에 바로 연결해도 좋습니다. ({tag_hint})"
+        if type_label == "youtube":
+            return f"🎬 제보 핵심 한 줄: `{clean_title}` / 참고 가능한 영상 제보입니다. 체크포인트를 바로 정리해보세요. ({tag_hint})"
+        if type_label == "photo":
+            return f"🖼️ 제보 핵심 한 줄: `{clean_title}` / 비주얼 참고용 제보입니다. 톤/메시지 정합성 판단용으로 적합합니다. ({tag_hint})"
+        return f"🧩 제보 핵심 한 줄: `{clean_title}` / 운영 판단이 필요한 인풋입니다. 지금 바로 분류/반영 여부를 정하세요. ({tag_hint})"
+
     def _ai_enrich(
         self,
         *,
@@ -1245,18 +1261,25 @@ class CurationService:
         attachments = submission.get("attachments") if isinstance(submission.get("attachments"), list) else []
         fallback_title = self._build_title(curation_type, text, urls, attachments)
         title = self._sanitize_title(str(submission.get("normalized_title") or ""), fallback=fallback_title)
-        links_text = "\n".join(f"- {_short_url_display(str(u))}" for u in urls[:10]) if urls else "- 없음"
+        links_text = (
+            _short_url_display(str(urls[0])) if len(urls) == 1
+            else "\n".join(f"- {_short_url_display(str(u))}" for u in urls[:10])
+        ) if urls else "- 없음"
+        links_label = f"링크 ({len(urls)}건)"
+        if len(urls) <= 1:
+            links_label = "링크"
         summary = _normalize_display_summary(str(submission.get("normalized_summary") or ""))
         link_summary_only = self._is_link_count_summary(summary)
         intro = self._curation_intro(curation_type)
+        teaser = self._one_sentence_teaser(curation_type, title, tags)
 
         lines = [
             f"🧠 망상궤도 큐레이션 - {title}",
             f"작성자: <@{submission.get('author_id')}>",
-            f"요약형: {intro}",
+            teaser,
             f"요약: {summary}" if summary and not link_summary_only else f"요약: {intro}",
             "",
-            f"링크 ({len(urls)}건)",
+            links_label,
             links_text,
             "",
             f"태그: {tags_text}",
@@ -1266,7 +1289,7 @@ class CurationService:
             lines.append(f"멘션: {mention_text}")
 
         if not summary or link_summary_only:
-            lines[2] = f"요약형: {intro}"
+            lines[3] = f"요약: {intro}"
         content = "\n".join(line for line in lines if line is not None)
 
         files: list[discord.File] = []
