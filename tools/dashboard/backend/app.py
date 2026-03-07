@@ -12,6 +12,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi import Request
 
+from bot.services.ops_diagnostics import (
+    build_curation_runtime,
+    build_event_reminder_runtime,
+    build_music_runtime,
+    build_news_runtime,
+    build_recent_failures,
+)
 from tools.dashboard.backend.services.jsonl_reader import DashboardDataService
 from tools.dashboard.backend.services.runtime import RuntimeStateService
 
@@ -71,6 +78,10 @@ settings = _load_yaml(root_dir)
 data_config = settings.get("data", {}) if isinstance(settings, dict) else {}
 app_config = settings.get("app", {}) if isinstance(settings, dict) else {}
 warroom_config = settings.get("warroom", {}) if isinstance(settings, dict) else {}
+news_config = settings.get("news", {}) if isinstance(settings, dict) else {}
+music_config = settings.get("music", {}) if isinstance(settings, dict) else {}
+event_reminder_config = settings.get("event_reminder", {}) if isinstance(settings, dict) else {}
+scheduler_config = settings.get("scheduler", {}) if isinstance(settings, dict) else {}
 
 timezone_name = os.getenv("TZ") or str(app_config.get("timezone", "Asia/Seoul"))
 
@@ -96,6 +107,7 @@ files = {
     "warrooms": str(data_config.get("warrooms_file", "warrooms.jsonl")),
     "summaries": str(data_config.get("summaries_file", "summaries.jsonl")),
     "ops_events": str(data_config.get("ops_events_file", "ops_events.ndjson")),
+    "news_digests": str(data_config.get("news_digests_file", "news_digests.jsonl")),
     "curation_submissions": str(data_config.get("curation_submissions_file", "curation_submissions.jsonl")),
     "curation_posts": str(data_config.get("curation_posts_file", "curation_posts.jsonl")),
 }
@@ -466,6 +478,48 @@ def curation_overview(limit: int = Query(30, ge=1, le=300)) -> dict[str, Any]:
         "posts": post_rows,
         "corrupt_lines": submissions_bundle.corrupt_lines + posts_bundle.corrupt_lines,
         "data_missing": submissions_bundle.data_missing or posts_bundle.data_missing,
+    }
+
+
+@app.get("/api/ops/overview")
+def ops_overview(limit: int = Query(8, ge=1, le=50)) -> dict[str, Any]:
+    ops_rows = data_service.read("ops_events").rows
+    news_digests_rows = data_service.read("news_digests").rows
+    curation_submission_rows = data_service.read("curation_submissions").rows
+
+    return {
+        "cards": {
+            "news": build_news_runtime(
+                news_digests_rows,
+                ops_rows,
+                timezone_name=timezone_name,
+                morning_cron=str(scheduler_config.get("news_digest_morning_cron", "0 8 * * *")),
+                evening_cron=str(scheduler_config.get("news_digest_evening_cron", "0 18 * * 1-5")),
+            ),
+            "curation": build_curation_runtime(
+                curation_submission_rows,
+                ops_rows,
+                timezone_name=timezone_name,
+            ),
+            "music": build_music_runtime(
+                ops_rows,
+                timezone_name,
+                {
+                    "enabled": bool(music_config.get("enabled", False)),
+                    "notice_policy": str(music_config.get("notice_policy", "low_noise")),
+                    "default_control_channel": str(music_config.get("default_control_channel", "auto")),
+                    "ffmpeg_available": True,
+                    "voice_dependency_ok": True,
+                    "active_sessions": 0,
+                },
+            ),
+            "event_reminder": build_event_reminder_runtime(
+                ops_rows,
+                timezone_name=timezone_name,
+                scan_cron=str(event_reminder_config.get("scan_cron", "*/1 * * * *")),
+            ),
+        },
+        "recent_failures": build_recent_failures(ops_rows, timezone_name, limit=limit),
     }
 
 

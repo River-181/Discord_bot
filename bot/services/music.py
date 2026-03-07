@@ -5,6 +5,7 @@ import importlib.util
 import logging
 import os
 import re
+import shutil
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -196,14 +197,31 @@ class MusicService:
         return None
 
     def diagnostics(self) -> dict[str, Any]:
+        session_summaries = []
+        for guild_id, state in self._states.items():
+            session_summaries.append(
+                {
+                    "guild_id": guild_id,
+                    "voice_channel_id": state.voice_channel_id,
+                    "text_channel_id": state.text_channel_id,
+                    "control_channel_id": state.control_channel_id,
+                    "queue_length": len(state.queue),
+                    "current_title": state.current.title if state.current else None,
+                }
+            )
         return {
             "enabled": self.enabled,
             "source_policy": self.source_policy,
             "allowlist_count": len(self.allowlist_user_ids),
             "notice_policy": self.notice_policy,
+            "ffmpeg_path": self.ffmpeg_path,
+            "ffmpeg_available": self._ffmpeg_available(),
             "nacl_available": self._nacl_available,
             "opus_loaded": self._opus_loaded,
+            "voice_dependency_ok": self.voice_dependency_ok(),
             "ytdlp_available": self._ytdlp_available,
+            "default_control_channel": self.default_control_channel,
+            "panel_update_mode": self.panel_update_mode,
             "active_sessions": sum(
                 1
                 for guild_id in self._states.keys()
@@ -211,6 +229,65 @@ class MusicService:
                 and (voice_client := getattr(guild, "voice_client", None))
                 and voice_client.is_connected()
             ),
+            "session_summaries": session_summaries[:5],
+        }
+
+    def _ffmpeg_available(self) -> bool:
+        if os.path.isabs(self.ffmpeg_path):
+            return os.path.exists(self.ffmpeg_path)
+        return shutil.which(self.ffmpeg_path) is not None
+
+    def diagnose_guild(
+        self,
+        guild: discord.Guild,
+        *,
+        candidate_channel: discord.VoiceChannel | discord.StageChannel | None = None,
+    ) -> dict[str, Any]:
+        state = self._states.get(guild.id)
+        voice_client = guild.voice_client
+        connected = bool(voice_client and voice_client.is_connected())
+        current_channel = voice_client.channel if connected else None
+        inspect_channel = candidate_channel or current_channel
+        bot_member = self._bot_member(guild)
+        missing_permissions: list[str] = []
+        suppressed = False
+
+        if bot_member is not None:
+            voice_state = getattr(bot_member, "voice", None)
+            suppressed = bool(getattr(voice_state, "suppress", False))
+        if inspect_channel is not None and bot_member is not None and hasattr(inspect_channel, "permissions_for"):
+            perms = inspect_channel.permissions_for(bot_member)
+            for name in ("view_channel", "connect", "speak"):
+                if not getattr(perms, name, False):
+                    missing_permissions.append(name)
+
+        control_channel = self.resolve_control_channel(
+            guild,
+            fallback_channel_id=state.text_channel_id if state else None,
+        )
+        current_track = state.current if state else None
+        return {
+            "enabled": self.enabled,
+            "voice_dependency_ok": self.voice_dependency_ok(),
+            "nacl_available": self._nacl_available,
+            "opus_loaded": self._opus_loaded,
+            "ytdlp_available": self._ytdlp_available,
+            "ffmpeg_path": self.ffmpeg_path,
+            "ffmpeg_available": self._ffmpeg_available(),
+            "connected": connected,
+            "bot_channel_name": getattr(current_channel, "name", None),
+            "bot_channel_id": getattr(current_channel, "id", None),
+            "inspect_channel_name": getattr(inspect_channel, "name", None),
+            "inspect_channel_id": getattr(inspect_channel, "id", None),
+            "missing_permissions": missing_permissions,
+            "stage_suppressed": suppressed,
+            "default_control_channel": self.default_control_channel,
+            "resolved_control_channel": getattr(control_channel, "name", None),
+            "panel_update_mode": self.panel_update_mode,
+            "current_track_title": current_track.title if current_track else None,
+            "queue_length": len(state.queue) if state else 0,
+            "text_channel_id": state.text_channel_id if state else None,
+            "control_channel_id": state.control_channel_id if state else None,
         }
 
     def active_sessions(self) -> int:

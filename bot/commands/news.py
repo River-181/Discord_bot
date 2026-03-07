@@ -6,6 +6,8 @@ from typing import TYPE_CHECKING
 import discord
 from discord import app_commands
 
+from bot.services.ops_diagnostics import build_news_runtime
+
 if TYPE_CHECKING:
     from bot.app import MangsangBot
 
@@ -80,6 +82,13 @@ def register(bot: "MangsangBot") -> None:
         log_channel = bot.settings.channels.get("news_log", "")
         morning_cron = str(scheduler_cfg.get("news_digest_morning_cron", "0 8 * * *"))
         evening_cron = str(scheduler_cfg.get("news_digest_evening_cron", "0 18 * * 1-5"))
+        runtime = build_news_runtime(
+            bot.storage.read_jsonl("news_digests"),
+            bot.storage.read_jsonl("ops_events"),
+            timezone_name=bot.settings.timezone,
+            morning_cron=morning_cron,
+            evening_cron=evening_cron,
+        )
 
         lines = [
             "뉴스 레이다 설정",
@@ -95,6 +104,12 @@ def register(bot: "MangsangBot") -> None:
             f"- auto_create_digest_channel: `{auto_create}`",
             f"- default_digest_channel_name: `{default_channel_name}`",
             f"- topics: `{len(topics)}`",
+            f"- last_run_at: `{runtime.get('last_run_at') or '-'}`",
+            f"- last_result: `{runtime.get('last_result') or '-'}`",
+            f"- next_run_at: `{runtime.get('next_run_at') or '-'}`",
+            f"- last_items_count: `{runtime.get('last_items_count', 0)}`",
+            f"- last_failure_at: `{runtime.get('last_failure_at') or '-'}`",
+            f"- last_failure: `{runtime.get('last_failure') or '-'}`",
         ]
         await interaction.response.send_message("\n".join(lines), ephemeral=True)
 

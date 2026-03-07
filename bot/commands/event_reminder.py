@@ -5,6 +5,8 @@ from typing import TYPE_CHECKING
 import discord
 from discord import app_commands
 
+from bot.services.ops_diagnostics import build_event_reminder_runtime
+
 if TYPE_CHECKING:
     from bot.app import MangsangBot
 
@@ -22,6 +24,12 @@ def register(bot: "MangsangBot") -> None:
     async def event_reminder_status(interaction: discord.Interaction) -> None:
         diag = bot.event_reminder_service.diagnostics()
         last_scan = diag.get("last_scan", {}) if isinstance(diag.get("last_scan"), dict) else {}
+        runtime = build_event_reminder_runtime(
+            bot.storage.read_jsonl("ops_events"),
+            timezone_name=bot.settings.timezone,
+            scan_cron=str(diag.get("scan_cron") or "*/1 * * * *"),
+            last_scan=last_scan,
+        )
         lines = [
             "이벤트 리마인더 상태",
             f"- enabled: `{diag.get('enabled')}`",
@@ -39,6 +47,10 @@ def register(bot: "MangsangBot") -> None:
             f"- last_dm_sent: `{last_scan.get('dm_sent', 0)}`",
             f"- last_dm_failed: `{last_scan.get('dm_failed', 0)}`",
             f"- last_errors: `{last_scan.get('errors', 0)}`",
+            f"- last_result: `{runtime.get('last_result') or '-'}`",
+            f"- next_run_at: `{runtime.get('next_run_at') or '-'}`",
+            f"- last_failure_at: `{runtime.get('last_failure_at') or '-'}`",
+            f"- last_failure: `{runtime.get('last_failure') or '-'}`",
         ]
         await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
@@ -113,4 +125,3 @@ def register(bot: "MangsangBot") -> None:
     else:
         bot.tree.add_command(event_reminder_status)
         bot.tree.add_command(event_reminder_config)
-

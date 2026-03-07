@@ -6,6 +6,14 @@ from typing import TYPE_CHECKING
 import discord
 from discord import app_commands
 
+from bot.services.ops_diagnostics import (
+    build_curation_runtime,
+    build_event_reminder_runtime,
+    build_music_runtime,
+    build_news_runtime,
+    build_recent_failures,
+)
+
 if TYPE_CHECKING:
     from bot.app import MangsangBot
 
@@ -13,6 +21,9 @@ if TYPE_CHECKING:
 def register(bot: "MangsangBot") -> None:
     @app_commands.command(name="bot_status", description="봇 상태를 확인합니다.")
     async def bot_status(interaction: discord.Interaction) -> None:
+        ops_rows = bot.storage.read_jsonl("ops_events")
+        news_digest_rows = bot.storage.read_jsonl("news_digests")
+        curation_submission_rows = bot.storage.read_jsonl("curation_submissions")
         active_rooms = len(bot.storage.active_warrooms())
         all_rooms = len(bot.storage.all_latest_warrooms())
         decisions = len(bot.storage.read_jsonl("decisions"))
@@ -41,6 +52,28 @@ def register(bot: "MangsangBot") -> None:
         curation_mode = str(curation_diag.mode) if curation_diag else "approve"
         curation_inbox = str(curation_diag.inbox_channel) if curation_diag else "-"
         curation_counts = bot.curation_service.counts() if hasattr(bot, "curation_service") else {}
+        morning_cron = str(bot.settings.scheduler.get("news_digest_morning_cron", "0 8 * * *"))
+        evening_cron = str(bot.settings.scheduler.get("news_digest_evening_cron", "0 18 * * 1-5"))
+        news_runtime = build_news_runtime(
+            news_digest_rows,
+            ops_rows,
+            timezone_name=bot.settings.timezone,
+            morning_cron=morning_cron,
+            evening_cron=evening_cron,
+        )
+        curation_runtime = build_curation_runtime(
+            curation_submission_rows,
+            ops_rows,
+            timezone_name=bot.settings.timezone,
+        )
+        event_runtime = build_event_reminder_runtime(
+            ops_rows,
+            timezone_name=bot.settings.timezone,
+            scan_cron=event_scan_cron,
+            last_scan=event_diag.get("last_scan") if isinstance(event_diag, dict) else None,
+        )
+        music_runtime = build_music_runtime(ops_rows, bot.settings.timezone, music_diag)
+        recent_failures = build_recent_failures(ops_rows, bot.settings.timezone, limit=5)
         process_mode = (
             "launchd"
             if os.getenv("XPC_SERVICE_NAME") == "com.mangsang.orbit.assistant"
@@ -104,9 +137,27 @@ def register(bot: "MangsangBot") -> None:
             f"- has_meeting_summary_v2: {has_meeting_summary_v2}",
             f"- meeting_options_equal: {meeting_options_equal}",
             f"- timezone: {bot.settings.timezone}",
+            "운영 상태판",
+            f"- news_last_run_at: {news_runtime.get('last_run_at') or '-'}",
+            f"- news_next_run_at: {news_runtime.get('next_run_at') or '-'}",
+            f"- news_last_result: {news_runtime.get('last_result') or '-'}",
+            f"- curation_pending_oldest_at: {curation_runtime.get('pending_oldest_at') or '-'}",
+            f"- curation_pending_oldest_age_hours: {curation_runtime.get('pending_oldest_age_hours') or '-'}",
+            f"- curation_hook_persona_ratio: {curation_runtime.get('hook_persona_ratio', 0)}%",
+            f"- music_last_failure_at: {music_runtime.get('last_failure_at') or '-'}",
+            f"- music_last_failure: {music_runtime.get('last_failure') or '-'}",
+            f"- event_last_run_at: {event_runtime.get('last_run_at') or '-'}",
+            f"- event_next_run_at: {event_runtime.get('next_run_at') or '-'}",
+            f"- event_last_result: {event_runtime.get('last_result') or '-'}",
         ]
         if command_fetch_error:
             lines.append(f"- command_fetch_error: {command_fetch_error}")
+        if recent_failures:
+            lines.append("- recent_failures:")
+            for row in recent_failures:
+                lines.append(
+                    f"  - {row.get('occurred_at')} | {row.get('event_type')} | {row.get('detail')}"
+                )
         await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
     if bot.command_guild:

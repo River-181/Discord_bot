@@ -8,6 +8,7 @@ import httpx
 import streamlit as st
 
 from tools.dashboard.frontend.components.overview import render_overview
+from tools.dashboard.frontend.components.operations import render_operations
 from tools.dashboard.frontend.components.warrooms import render_warrooms
 from tools.dashboard.frontend.components.summaries_decisions import render_summaries_decisions
 from tools.dashboard.frontend.components.events import render_events
@@ -121,6 +122,7 @@ def main() -> None:
             st.sidebar.success(f"런타임 상태: {runtime_state.get('state')}")
 
         overview = _fetch("/api/overview")
+        ops_overview = _fetch("/api/ops/overview")
         metrics = _fetch("/api/metrics/quick", params={"hours": metric_hours_map[metric_hours]})
         warrooms = _fetch("/api/warrooms", params={"status": warroom_status, "limit": warroom_limit})
         summaries = _fetch("/api/summaries", params={"scope": summary_scope, "limit": summary_limit})
@@ -142,6 +144,8 @@ def main() -> None:
         target_guild_id = overview.get("target_guild_id")
 
         render_overview(overview, target_guild_id=target_guild_id)
+        st.markdown("---")
+        render_operations(ops_overview)
 
         st.markdown("---")
         st.subheader("빠른 지표")

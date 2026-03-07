@@ -30,6 +30,7 @@ def test_register_music_commands_count() -> None:
     group = bot.tree.commands[0]
     subcommands = {cmd.name for cmd in group.commands}
     assert subcommands == {
+        "diagnose",
         "join",
         "play",
         "pause",

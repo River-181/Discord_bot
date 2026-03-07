@@ -6,6 +6,8 @@ from typing import TYPE_CHECKING
 import discord
 from discord import app_commands
 
+from bot.services.ops_diagnostics import build_curation_runtime
+
 if TYPE_CHECKING:
     from bot.app import MangsangBot
 
@@ -41,6 +43,13 @@ def register(bot: "MangsangBot") -> None:
     async def curation_status(interaction: discord.Interaction) -> None:
         diag = bot.curation_service.diagnostics() if hasattr(bot, "curation_service") else None
         counts = bot.curation_service.counts() if hasattr(bot, "curation_service") else {}
+        runtime = build_curation_runtime(
+            bot.storage.read_jsonl("curation_submissions"),
+            bot.storage.read_jsonl("ops_events"),
+            timezone_name=bot.settings.timezone,
+        )
+        type_counts = runtime.get("type_counts", {})
+        hook_source_counts = runtime.get("hook_source_counts", {})
         lines = [
             "큐레이션 상태",
             f"- enabled: `{diag.enabled if diag else False}`",
@@ -53,6 +62,16 @@ def register(bot: "MangsangBot") -> None:
             f"- rejected: `{counts.get('rejected', 0)}`",
             f"- merged: `{counts.get('merged', 0)}`",
             f"- total: `{counts.get('total', 0)}`",
+            f"- pending_oldest_at: `{runtime.get('pending_oldest_at') or '-'}`",
+            f"- pending_oldest_age_hours: `{runtime.get('pending_oldest_age_hours') or '-'}`",
+            f"- latest_approved_at: `{runtime.get('latest_approved_at') or '-'}`",
+            f"- latest_rejected_at: `{runtime.get('latest_rejected_at') or '-'}`",
+            f"- latest_merged_at: `{runtime.get('latest_merged_at') or '-'}`",
+            f"- hook_source(summary/persona): `{hook_source_counts.get('summary', 0)}/{hook_source_counts.get('persona', 0)}`",
+            f"- hook_persona_ratio: `{runtime.get('hook_persona_ratio', 0)}%`",
+            f"- type_inflow: `link={type_counts.get('link', 0)} idea={type_counts.get('idea', 0)} music={type_counts.get('music', 0)} youtube={type_counts.get('youtube', 0)} photo={type_counts.get('photo', 0)}`",
+            f"- last_failure_at: `{runtime.get('last_failure_at') or '-'}`",
+            f"- last_failure: `{runtime.get('last_failure') or '-'}`",
         ]
         await interaction.response.send_message("\n".join(lines), ephemeral=True)
 

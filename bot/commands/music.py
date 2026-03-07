@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 import discord
 from discord import app_commands
 
+from bot.services.ops_diagnostics import build_music_runtime
 from bot.services.music import MusicError, PolicyError
 from bot.utils import truncate_text
 
@@ -77,6 +78,29 @@ async def _log_command(
     )
 
 
+async def _log_failure(
+    bot: "MangsangBot",
+    interaction: discord.Interaction,
+    command_name: str,
+    reason_code: str,
+    detail: str,
+) -> None:
+    guild_id = interaction.guild.id if interaction.guild else None
+    channel_id = interaction.channel.id if interaction.channel else None
+    user_id = interaction.user.id if interaction.user else None
+    await bot.storage.append_ops_event(
+        "music_command_failed",
+        {
+            "guild_id": guild_id,
+            "channel_id": channel_id,
+            "user_id": user_id,
+            "command_name": command_name,
+            "reason_code": reason_code,
+            "error": detail,
+        },
+    )
+
+
 def register(bot: "MangsangBot") -> None:
     music_group = app_commands.Group(name="music", description="음악 재생/제어 명령")
 
@@ -100,6 +124,7 @@ def register(bot: "MangsangBot") -> None:
                 ephemeral=True,
             )
             await _log_command(bot, interaction, "music_join", "missing_nacl")
+            await _log_failure(bot, interaction, "music_join", "missing_voice_dependency", "PyNaCl/Opus unavailable")
             return
 
         user_channel = _get_member_voice_channel(interaction)
@@ -144,6 +169,7 @@ def register(bot: "MangsangBot") -> None:
         except MusicError as exc:
             await interaction.followup.send(str(exc), ephemeral=True)
             await _log_command(bot, interaction, "music_join", f"error:{type(exc).__name__}")
+            await _log_failure(bot, interaction, "music_join", "join_failed", str(exc))
 
     @music_group.command(name="play", description="음악을 재생합니다. (URL 또는 검색어)")
     @app_commands.describe(query_or_url="직접 URL 또는 검색어(검색은 allowlist만)")
@@ -162,6 +188,7 @@ def register(bot: "MangsangBot") -> None:
                 ephemeral=True,
             )
             await _log_command(bot, interaction, "music_play", "missing_nacl")
+            await _log_failure(bot, interaction, "music_play", "missing_voice_dependency", "PyNaCl/Opus unavailable")
             return
 
         user_channel = _get_member_voice_channel(interaction)
@@ -206,6 +233,8 @@ def register(bot: "MangsangBot") -> None:
         except (PolicyError, MusicError) as exc:
             await interaction.followup.send(str(exc), ephemeral=True)
             await _log_command(bot, interaction, "music_play", f"blocked:{type(exc).__name__}")
+            reason_code = "policy_blocked" if isinstance(exc, PolicyError) else "play_failed"
+            await _log_failure(bot, interaction, "music_play", reason_code, str(exc))
         except Exception as exc:  # pragma: no cover
             LOGGER.exception("music_play failed: %s", exc)
             await interaction.followup.send(
@@ -213,6 +242,48 @@ def register(bot: "MangsangBot") -> None:
                 ephemeral=True,
             )
             await _log_command(bot, interaction, "music_play", f"error:{type(exc).__name__}")
+            await _log_failure(bot, interaction, "music_play", "unexpected_exception", f"{type(exc).__name__}: {exc}")
+
+    @music_group.command(name="diagnose", description="음악 재생 진단 정보를 확인합니다.")
+    async def music_diagnose(interaction: discord.Interaction) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message("길드 채널에서만 사용할 수 있습니다.", ephemeral=True)
+            return
+
+        candidate_channel = _get_member_voice_channel(interaction) or _get_bot_voice_channel(interaction.guild)
+        service_diag = bot.music_service.diagnostics()
+        guild_diag = bot.music_service.diagnose_guild(interaction.guild, candidate_channel=candidate_channel)
+        runtime = build_music_runtime(
+            bot.storage.read_jsonl("ops_events"),
+            bot.settings.timezone,
+            service_diag,
+        )
+
+        lines = [
+            "음악 진단",
+            f"- enabled: `{guild_diag.get('enabled')}`",
+            f"- voice_dependency_ok: `{guild_diag.get('voice_dependency_ok')}`",
+            f"- nacl_available: `{guild_diag.get('nacl_available')}`",
+            f"- opus_loaded: `{guild_diag.get('opus_loaded')}`",
+            f"- ytdlp_available: `{guild_diag.get('ytdlp_available')}`",
+            f"- ffmpeg_path: `{guild_diag.get('ffmpeg_path')}`",
+            f"- ffmpeg_available: `{guild_diag.get('ffmpeg_available')}`",
+            f"- active_sessions: `{runtime.get('active_sessions', 0)}`",
+            f"- bot_connected: `{guild_diag.get('connected')}`",
+            f"- bot_channel: `{guild_diag.get('bot_channel_name') or '-'}`",
+            f"- inspect_channel: `{guild_diag.get('inspect_channel_name') or '-'}`",
+            f"- missing_permissions: `{', '.join(guild_diag.get('missing_permissions', [])) or '-'}`",
+            f"- stage_suppressed: `{guild_diag.get('stage_suppressed')}`",
+            f"- default_control_channel: `{guild_diag.get('default_control_channel')}`",
+            f"- resolved_control_channel: `{guild_diag.get('resolved_control_channel') or '-'}`",
+            f"- panel_update_mode: `{guild_diag.get('panel_update_mode')}`",
+            f"- current_track: `{guild_diag.get('current_track_title') or '-'}`",
+            f"- queue_length: `{guild_diag.get('queue_length', 0)}`",
+            f"- last_failure_at: `{runtime.get('last_failure_at') or '-'}`",
+            f"- last_failure: `{runtime.get('last_failure') or '-'}`",
+        ]
+        await interaction.response.send_message("\n".join(lines), ephemeral=True)
+        await _log_command(bot, interaction, "music_diagnose", "ok")
 
     async def _require_control_context(
         interaction: discord.Interaction,

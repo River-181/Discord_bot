@@ -84,6 +84,10 @@ class _FakeGuild:
     def __init__(self, guild_id: int = 77) -> None:
         self.id = guild_id
         self.voice_client = _FakeVoiceClient()
+        self.me = None
+
+    def get_channel(self, channel_id: int):  # noqa: ANN001
+        return None
 
 
 def test_source_policy_blocks_youtube_for_non_allowlist(tmp_path) -> None:
@@ -203,3 +207,22 @@ def test_set_volume_applies_to_current_source(tmp_path) -> None:
     assert applied == 30
     assert applied_now is True
     assert abs(guild.voice_client.source.volume - 0.3) < 1e-9
+
+
+def test_music_diagnostics_and_guild_diagnose(tmp_path) -> None:
+    service = _make_service(
+        tmp_path,
+        config={"enabled": True, "default_control_channel": "auto", "ffmpeg_path": "ffmpeg"},
+    )
+    guild = _FakeGuild(92)
+    state = service._state(guild.id)  # type: ignore[attr-defined]
+    state.current = Track("Active", "u", "w", None, 1, "direct")
+    state.queue.append(Track("Queued", "u2", "w2", None, 1, "direct"))
+
+    diag = service.diagnostics()
+    guild_diag = service.diagnose_guild(guild)
+
+    assert "ffmpeg_available" in diag
+    assert diag["default_control_channel"] == "auto"
+    assert guild_diag["current_track_title"] == "Active"
+    assert guild_diag["queue_length"] == 1
