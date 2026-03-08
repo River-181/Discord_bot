@@ -170,7 +170,8 @@ cd /Users/river/tools/mangsang-orbit-assistant
 ```
 
 정상 기준(핵심만):
-- `guild_command_count: 12`
+- `global_command_count: 0`
+- `guild_command_count`는 현재 릴리스 기준과 일치
 - `global_command_count: 0`
 - `meeting_options_equal: True`
 
@@ -181,11 +182,13 @@ Discord에서:
 
 확인 포인트:
 - `process_mode: launchd`
-- `has_meeting_summary: True`
-- `has_meeting_summary_v2: True` (마이그레이션 기간에만)
 - `event_reminder_enabled: True`
 - `event_reminder_scan_cron: */1 * * * *`
 - `event_reminder_channel: 운영-브리핑`
+- `news_last_run_at`, `news_next_run_at`
+- `curation_hook_persona_ratio`
+- `music_last_failure`
+- `event_last_result`
 
 ---
 
@@ -229,6 +232,19 @@ Figure 13. `/warroom_open` 성공 결과 예시
 
 Figure 14. `/event_reminder_status` 결과 예시
 Figure 15. 5분 전 알림 채널 메시지 예시
+
+### 7-4) Phase 2 운영 가시성 점검
+
+```text
+/news_config
+/curation_status
+/music diagnose
+```
+
+확인 포인트:
+- `/news_config`: `last_run_at`, `last_result`, `next_run_at`
+- `/curation_status`: `pending_oldest_age_hours`, `hook_source(summary/persona)`, `hook_persona_ratio`
+- `/music diagnose`: `voice_dependency_ok`, `ffmpeg_available`, `missing_permissions`, `last_failure`
 
 ---
 
@@ -274,6 +290,27 @@ Figure 15. 5분 전 알림 채널 메시지 예시
 1. `/event_reminder_status`로 마지막 스캔 결과 확인
 2. `config/settings.yaml`의 `event_reminder.reminder_channel` 채널명 확인
 3. 봇 재시작 후 `data/ops_events.ndjson`에 `event_reminder_scan_completed` 기록 확인
+
+### E) 음악 패널은 보이는데 재생이 안 된다
+원인:
+- Opus/FFmpeg 미설치
+- 음성 채널 권한 부족
+- Stage 채널 suppress 상태
+
+대응:
+1. `/music diagnose` 실행
+2. `ffmpeg_available`, `voice_dependency_ok`, `missing_permissions`, `stage_suppressed` 확인
+3. 필요 시 `.env`의 `OPUS_LIBRARY_PATH`, `FFMPEG_PATH` 확인 후 재시작
+
+### F) 기능은 켜져 있는데 정기 작업이 안 돈다
+원인:
+- 스케줄러 비시작
+- 최근 실패를 보지 못함
+
+대응:
+1. `/bot_status` 실행
+2. `news_next_run_at`, `event_next_run_at`, `scheduler_started` 확인
+3. 로컬 대시보드의 `기능별 운영 상태`와 `최근 실패` 확인
 
 ---
 

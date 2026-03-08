@@ -271,5 +271,5 @@ OPUS_LIBRARY_PATH=/opt/homebrew/opt/opus/lib/libopus.0.dylib
   - 조치 3: `FFMPEG_PATH`, `OPUS_LIBRARY_PATH` 재확인 후 재시작
 
 ## Docs
-- `docs/command-migration-runbook-2026-02-18.md`
+- `docs/command-migration-runbook.md`
 - `docs/agent-team-playbook.md`

@@ -1,6 +1,6 @@
 # Medium 첨부 이미지 매니페스트
 문서 대상:
-- `/Users/river/tools/mangsang-orbit-assistant/docs/medium-blog-new-space-setup-and-connection-2026-02-final.md`
+- `/Users/river/tools/mangsang-orbit-assistant/docs/new-space-setup-and-connection.md`
 
 작성일:
 - 2026-02-18

@@ -1,4 +1,4 @@
-# Discord Command Migration Runbook (2026-02-18)
+# Discord Command Migration Runbook
 
 ## Scope
 - Guild: `Team.망상궤도` (`1401492009486651452`)

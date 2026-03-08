@@ -1,8 +1,8 @@
-# Team.망상궤도 내부 지식 문서
-## Discord 세팅 + AI + 봇 운영 통합 매뉴얼 (2026-02-25 반영)
+# Discord Bot Operations Manual
+## Team.망상궤도 Discord 세팅 + AI + 봇 운영 통합 매뉴얼 (2026-03-09 반영)
 
-문서 버전: v1.1  
-작성 기준일: 2026-02-25  
+문서 버전: v1.2  
+작성 기준일: 2026-03-09  
 적용 대상: Team.망상궤도 Discord 서버 운영자/개발자/PM  
 표준 시간대: Asia/Seoul
 
@@ -18,13 +18,16 @@
 - 실행 모델: `Gemini 2.0 Flash + fallback`
 - 운영 방식: `launchd` 상시 실행
 - 데이터 원본: Discord 메시지
-- 보조 저장: JSONL (`summaries`, `decisions`, `warrooms`, `ops_events`)
+- 보조 저장: JSONL (`summaries`, `decisions`, `warrooms`, `ops_events`, `news_digests`, `curation_submissions`, `curation_posts`)
 
 ### 3) 핵심 명령
 - `/meeting_summary`
-- `/meeting_summary_v2` (캐시 우회용, 2026-02-25 제거 예정)
 - `/decision_add`
 - `/warroom_open`, `/warroom_close`, `/warroom_list`
+- `/news_run_now`, `/news_config`
+- `/curation_status`, `/curation_publish`, `/curation_reject`
+- `/event_reminder_status`, `/event_reminder_config`
+- `/music ...`, `/music diagnose`
 - `/bot_status`
 
 ### 4) 핵심 위험
@@ -177,6 +180,9 @@
 - `/Users/river/tools/mangsang-orbit-assistant/data/decisions.jsonl`
 - `/Users/river/tools/mangsang-orbit-assistant/data/warrooms.jsonl`
 - `/Users/river/tools/mangsang-orbit-assistant/data/ops_events.ndjson`
+- `/Users/river/tools/mangsang-orbit-assistant/data/news_digests.jsonl`
+- `/Users/river/tools/mangsang-orbit-assistant/data/curation_submissions.jsonl`
+- `/Users/river/tools/mangsang-orbit-assistant/data/curation_posts.jsonl`
 - `/Users/river/tools/mangsang-orbit-assistant/data/snapshots/`
 
 ### D-3. 이벤트 기반 자동 동작
@@ -184,12 +190,20 @@
 - 워룸 활동 시간 갱신
 - 스레드 전환 권고
 - Deep Work 멘션 가드
+- 큐레이션 인박스/DM 자동접수
 - 슬래시 명령:
 - 회의 요약/결정 추출
 - 워룸 생성/종료/목록 조회
+- 뉴스 수동 실행/설정 조회
+- 큐레이션 승인/반려/상태 조회
+- 이벤트 리마인더 상태/설정 조회
+- 음악 재생/진단
 - 스케줄러:
 - 비활성 워룸 스캔
 - 일일 백업
+- 뉴스 아침/저녁 발행
+- 음악 housekeeping
+- 이벤트 리마인더 스캔
 
 ---
 
@@ -241,9 +255,55 @@
 - 현재 출력에 포함:
 - `process_mode`
 - `guild_command_count`
-- `has_meeting_summary`
-- `has_meeting_summary_v2`
-- `meeting_options_equal`
+- `scheduler_started`
+- `news_last_run_at`, `news_next_run_at`, `news_last_result`
+- `curation_pending_oldest_at`, `curation_hook_persona_ratio`
+- `music_last_failure_at`, `music_last_failure`
+- `event_last_run_at`, `event_next_run_at`, `event_last_result`
+- `recent_failures`
+
+### E-4. 기능별 운영 점검 명령
+- 큐레이션:
+```bash
+/curation_status
+```
+- 확인 포인트:
+- `pending_oldest_age_hours`
+- `hook_source(summary/persona)`
+- `hook_persona_ratio`
+- `type_inflow`
+
+- 뉴스:
+```bash
+/news_config
+```
+- 확인 포인트:
+- `last_run_at`
+- `last_result`
+- `next_run_at`
+- `last_failure`
+
+- 이벤트:
+```bash
+/event_reminder_status
+```
+- 확인 포인트:
+- `last_result`
+- `next_run_at`
+- `last_due_events`
+- `last_failure`
+
+- 음악:
+```bash
+/music diagnose
+```
+- 확인 포인트:
+- `voice_dependency_ok`
+- `ffmpeg_available`
+- `missing_permissions`
+- `stage_suppressed`
+- `resolved_control_channel`
+- `last_failure`
 
 ---
 
@@ -265,9 +325,10 @@ cd /Users/river/tools/mangsang-orbit-assistant
 ```
 
 통과 기준:
-- `guild_command_count = 16`
 - `global_command_count = 0`
-- `meeting_options_equal = True`
+- `guild_command_count`가 현재 릴리스와 일치
+- `sync-probe ok phase=migration`
+- `/bot_status`에서 기능별 상태 필드가 모두 노출
 - `sync-probe ok phase=migration`
 
 ### F-3. D+7 이후 검증(2026-02-25)
@@ -315,8 +376,9 @@ cd /Users/river/tools/mangsang-orbit-assistant
 
 대응:
 1. `/music panel` 실행으로 패널 재게시
-2. 동일 현상 반복 시 `./scripts/botctl.sh restart` 후 재확인
-3. 채널에 구 패널 메시지가 여러 개면 최신 1개만 남기고 정리
+2. `/music diagnose`로 `resolved_control_channel`, `missing_permissions`, `last_failure` 확인
+3. 동일 현상 반복 시 `./scripts/botctl.sh restart` 후 재확인
+4. 채널에 구 패널 메시지가 여러 개면 최신 1개만 남기고 정리
 
 ### G-5. 증상: 음성 채널에서 음악이 들리지 않음
 원인:
@@ -325,18 +387,54 @@ cd /Users/river/tools/mangsang-orbit-assistant
 - Opus/FFmpeg 경로 누락
 
 대응:
-1. 대상 음성 채널에서 봇 권한 `연결(connect)`/`말하기(speak)` 확인
-2. Stage 채널이면 봇 발언 허용(unsuppress) 적용
-3. 환경값 확인: `OPUS_LIBRARY_PATH`, `FFMPEG_PATH`
-4. 봇 재기동 후 재테스트 (`/music join` -> `/music play`)
+1. `/music diagnose` 실행
+2. 출력의 `missing_permissions`, `stage_suppressed`, `ffmpeg_available`, `voice_dependency_ok` 확인
+3. 대상 음성 채널에서 봇 권한 `연결(connect)`/`말하기(speak)` 확인
+4. Stage 채널이면 봇 발언 허용(unsuppress) 적용
+5. 환경값 확인: `OPUS_LIBRARY_PATH`, `FFMPEG_PATH`
+6. 봇 재기동 후 재테스트 (`/music join` -> `/music play`)
 
 ### G-6. 뉴스 레이다 정기 발행 시간
 - 아침 발행: `매일 08:00` (`news_digest_morning_cron = "0 8 * * *"`)
 - 저녁 발행: `평일 18:00` (`news_digest_evening_cron = "0 18 * * 1-5"`)
+- 점검 명령: `/news_config`
+
+### G-7. 증상: 기능은 enabled인데 실제 스케줄이 돌지 않음
+원인:
+- 스케줄러 비시작
+- cron 값 오설정
+- 마지막 실행 실패가 묻혀 있음
+
+대응:
+1. `/bot_status`에서 `scheduler_started`, `news_next_run_at`, `event_next_run_at` 확인
+2. `/news_config`, `/event_reminder_status`로 `last_run_at`, `last_result`, `last_failure` 확인
+3. 대시보드 운영 상태판에서 최근 실패 이벤트 확인
+4. 필요 시 `./scripts/botctl.sh restart --launchd`
 
 ---
 
-## H. 보안/컴플라이언스
+## H. 운영 대시보드 활용 기준
+
+### H-1. 진입
+```bash
+cd /Users/river/tools/mangsang-orbit-assistant
+./tools/dashboard/scripts/start.sh
+```
+
+### H-2. 확인 대상
+- `기능별 운영 상태` 카드:
+- 뉴스, 큐레이션, 음악, 이벤트 4개
+- `최근 실패` 테이블:
+- 최근 `error/failed` 계열 ops event 요약
+- 운영자가 먼저 봐야 할 값:
+- 뉴스 `last_result`, `next_run_at`
+- 큐레이션 `pending`, `hook_persona_ratio`
+- 음악 `last_failure_at`
+- 이벤트 `last_due_events`, `last_failure`
+
+---
+
+## I. 보안/컴플라이언스
 
 ### H-1. 비밀정보 관리
 - 토큰/API 키는 `.env`로만 관리
@@ -352,7 +450,7 @@ cd /Users/river/tools/mangsang-orbit-assistant
 
 ---
 
-## I. 마이그레이션 일정 (고정)
+## J. 마이그레이션 일정 (고정)
 
 - D0: 2026-02-18
 - `/meeting_summary` + `/meeting_summary_v2` 병행 운영
@@ -365,11 +463,11 @@ cd /Users/river/tools/mangsang-orbit-assistant
 - `/meeting_summary` 단일화
 
 상세 실행 문서:
-- `/Users/river/tools/mangsang-orbit-assistant/docs/command-migration-runbook-2026-02-18.md`
+- `/Users/river/tools/mangsang-orbit-assistant/docs/command-migration-runbook.md`
 
 ---
 
-## J. 첨부 이미지 삽입 지시서
+## K. 첨부 이미지 삽입 지시서
 
 아래 순서대로 본 문서 해당 섹션에 이미지 삽입:
 - 첨부 이미지 01 -> `B-1 General Information`
